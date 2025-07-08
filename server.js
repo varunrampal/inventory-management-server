@@ -25,7 +25,7 @@ const app = express();
 
 app.use(cors({
 
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true, // Allow cookies to be sent
 
 }));
@@ -75,7 +75,7 @@ app.post('/admin/login', async (req, res) => {
     res.cookie('token', token, 
       { httpOnly: true,
         sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        secure: true,//process.env.NODE_ENV === 'production',
         maxAge: 24 * 60 * 60 * 1000 // 1 day
        }
        
@@ -89,7 +89,7 @@ app.post('/admin/login', async (req, res) => {
 // Middleware to check admin authentication
 app.get('/admin/auth-check', (req, res) => {
   const token = req.cookies.token;
-   console.log('Cookies:', req.cookies);  
+   console.log('Cookies received:', req.cookies);  
   console.log('Token:', token);
   if (!token) return res.status(401).send();
 
