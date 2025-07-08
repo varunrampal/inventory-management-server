@@ -115,7 +115,8 @@ app.post('/admin/logout', (req, res) => {
 });
 
 // Admin Routes to view and edit inventory
-app.get('/admin/inventory', requireAdmin,async (req, res) => {
+//app.get('/admin/inventory', requireAdmin,async (req, res) => {
+ app.get('/admin/inventory', async (req, res) => {
   try {
     const items = await connectedDb.collection('item').find().toArray();
     console.log('Fetched items:', items);
@@ -125,7 +126,8 @@ app.get('/admin/inventory', requireAdmin,async (req, res) => {
   }
 });
 
-app.put('/admin/inventory/:id',requireAdmin, async (req, res) => {
+//app.put('/admin/inventory/:id',requireAdmin, async (req, res) => {
+  app.put('/admin/inventory/:id', async (req, res) => {
   const { id } = req.params;
   const update = req.body;
   console.log('Updating item:', id, update);
