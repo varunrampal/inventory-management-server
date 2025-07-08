@@ -73,7 +73,7 @@ app.post('/admin/login', async (req, res) => {
     res.cookie('token', token, 
       { httpOnly: true,
         sameSite: 'lax',
-        secure: process.env.ENVIRONMENT === 'production',
+        secure: true,
         maxAge: 24 * 60 * 60 * 1000 // 1 day
        }
        
@@ -88,7 +88,7 @@ app.post('/admin/login', async (req, res) => {
 app.get('/admin/auth-check', (req, res) => {
   const token = req.cookies.token;
 
-  //console.log('Token:', token);
+  console.log('Token:', token);
   if (!token) return res.status(401).send();
 
   try {
