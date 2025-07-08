@@ -29,8 +29,9 @@ app.use(cors({
   credentials: true, // Allow cookies to be sent
 
 }));
-app.use(express.json());
 app.use(cookieParser());
+app.use(express.json());
+
 
 const {
   CLIENT_ID,
@@ -70,10 +71,11 @@ app.post('/admin/login', async (req, res) => {
   if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
     //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
     const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
+    console.log('Environment:', process.env.NODE_ENV);
     res.cookie('token', token, 
       { httpOnly: true,
         sameSite: 'lax',
-        secure: true,
+        secure: process.env.NODE_ENV === 'production',
         maxAge: 24 * 60 * 60 * 1000 // 1 day
        }
        
@@ -87,7 +89,7 @@ app.post('/admin/login', async (req, res) => {
 // Middleware to check admin authentication
 app.get('/admin/auth-check', (req, res) => {
   const token = req.cookies.token;
-
+   console.log('Cookies:', req.cookies);  
   console.log('Token:', token);
   if (!token) return res.status(401).send();
 
