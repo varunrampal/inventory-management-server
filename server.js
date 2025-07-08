@@ -23,7 +23,12 @@ const connectedDb = await db.connect();
 dotenv.config();
 const app = express();
 
-app.use(cors());
+app.use(cors({
+
+  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  credentials: true, // Allow cookies to be sent
+
+}));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -256,5 +261,6 @@ app.post('/quickbooks/webhook', express.json(), async (req, res) => {
     }
   }
 });
+
 
 app.listen(4000, () => console.log('Server running on http://localhost:4000'));
