@@ -23,10 +23,15 @@ const connectedDb = await db.connect();
 dotenv.config();
 const app = express();
 
-app.use(cors({
+// app.use(cors({
 
-  origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
-  credentials: true, // Allow cookies to be sent
+//   origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
+//   credentials: true, // Allow cookies to be sent
+
+// }));
+
+app.use(cors({
+  origin: 'https://inventory-management-frontend-d8oi.onrender.com'//process.env.CLIENT_URL || 'http://localhost:5173',
 
 }));
 app.use(cookieParser());
@@ -66,57 +71,85 @@ const adminUser = {
 };
 
 // Admin login
+// app.post('/admin/login', async (req, res) => {
+//   const { email, password } = req.body;
+//   if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
+//     //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
+//     const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
+//     console.log('Environment:', process.env.NODE_ENV);
+//     res.cookie('token', token, 
+//       { httpOnly: true,
+//         sameSite: 'lax',
+//         secure: true,//process.env.NODE_ENV === 'production',
+//         maxAge: 24 * 60 * 60 * 1000 // 1 day
+//        }
+       
+//     );
+//     res.json({ success: true });
+//   } else {
+//     res.status(401).json({ error: 'Invalid credentials' });
+//   }
+// });
+
 app.post('/admin/login', async (req, res) => {
   const { email, password } = req.body;
   if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
     //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
     const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
-    console.log('Environment:', process.env.NODE_ENV);
-    res.cookie('token', token, 
-      { httpOnly: true,
-        sameSite: 'lax',
-        secure: true,//process.env.NODE_ENV === 'production',
-        maxAge: 24 * 60 * 60 * 1000 // 1 day
-       }
-       
-    );
-    res.json({ success: true });
+   
+    return res.status(200).json({ token });
+    
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
   }
 });
 
+
 // Middleware to check admin authentication
+// app.get('/admin/auth-check', (req, res) => {
+//   const token = req.cookies.token;
+//    console.log('Cookies received:', req.cookies);  
+//   console.log('Token:', token);
+//   if (!token) return res.status(401).send();
+
+//   try {
+
+//     jwt.verify(token, process.env.JWT_SECRET);
+//     return res.status(200).send();
+//   } catch {
+//     return res.status(401).send();
+//   }
+// });
 app.get('/admin/auth-check', (req, res) => {
-  const token = req.cookies.token;
-   console.log('Cookies received:', req.cookies);  
+  const authHeader = req.headers.authorization;
+  console.log('Authorization header:', authHeader);
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).send('No token');
+  }
+  const token = authHeader.split(' ')[1];
   console.log('Token:', token);
-  if (!token) return res.status(401).send();
-
   try {
-
-    jwt.verify(token, process.env.JWT_SECRET);
-    return res.status(200).send();
+    jwt.verify(token, SECRET);
+    res.sendStatus(200);
   } catch {
-    return res.status(401).send();
+    res.status(401).send('Invalid token');
   }
 });
-
 
 //Admin Logout
 app.post('/admin/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.ENVIRONMENT === 'production'
+    secure: true
   });
 
   return res.status(200).json({ message: 'Logged out' });
 });
 
 // Admin Routes to view and edit inventory
-//app.get('/admin/inventory', requireAdmin,async (req, res) => {
- app.get('/admin/inventory', async (req, res) => {
+app.get('/admin/inventory', requireAdmin,async (req, res) => {
+ //app.get('/admin/inventory', async (req, res) => {
   try {
     const items = await connectedDb.collection('item').find().toArray();
     console.log('Fetched items:', items);
@@ -126,8 +159,8 @@ app.post('/admin/logout', (req, res) => {
   }
 });
 
-//app.put('/admin/inventory/:id',requireAdmin, async (req, res) => {
-  app.put('/admin/inventory/:id', async (req, res) => {
+app.put('/admin/inventory/:id',requireAdmin, async (req, res) => {
+ // app.put('/admin/inventory/:id', async (req, res) => {
   const { id } = req.params;
   const update = req.body;
   console.log('Updating item:', id, update);
