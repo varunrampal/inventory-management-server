@@ -1,6 +1,6 @@
 // inventoryService.js
-import db from './db.js'; // your MongoDB connection
-import Invoice from './models/invoice.js';
+import db from '../db.js'; // your MongoDB connection
+import Invoice from '../models/invoice.js';
 const connectedDb = await db.connect();
 
 export const updateLocalInventory = async (itemId, qtyChange) => {

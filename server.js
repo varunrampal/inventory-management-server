@@ -10,49 +10,35 @@ import { ObjectId } from 'mongodb';
 import mongoose from 'mongoose';
 import { verifyWebhook } from './webhookHandler.js';
 import { syncInvoiceToInventory } from './syncInvoice.js';
-import {syncUpdatedInvoice} from './syncUpdatedInvoice.js';
-import {  saveInvoiceInLocalInventory, reverseInvoiceQuantities } from './inventoryService.js';
+import { syncUpdatedInvoice } from './syncUpdatedInvoice.js';
+import { saveInvoiceInLocalInventory, reverseInvoiceQuantities } from './services/inventoryService.js';
+import {
+  syncEstimateToInventory,
+  getEstimateDetails,
+  saveEstimateInLocalInventory,
+  syncUpdatedEstimate,
+  reverseEstimateQuantities
+} from './services/estimateService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
-import {getInvoiceDetails} from './quickbooksClient.js';
-import {requireAdmin} from './auth.js'; // For MongoDB ObjectId
+import { getInvoiceDetails } from './quickbooksClient.js';
+import { requireAdmin } from './middleware/auth.js'; // For MongoDB ObjectId
+import itemRoutes from './routes/items.js';
 //import './cron.js'
 import db from './db.js'; // your MongoDB connection
-
-const connectedDb = await db.connect();
-
 dotenv.config();
+
 const app = express();
 
-// app.use(cors({
-
-//   origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
-//   credentials: true, // Allow cookies to be sent
-
-// }));
-
-app.use(cors({
-  origin: 'https://inventory-management-frontend-d8oi.onrender.com'//process.env.CLIENT_URL || 'http://localhost:5173',
-
-}));
-app.use(cookieParser());
-app.use(express.json());
-
+const connectedDb = await db.connect();
 
 const {
   CLIENT_ID,
   CLIENT_SECRET,
   REDIRECT_URI,
   ENVIRONMENT,
-  MONGO_URI
+  MONGO_URI,
+  CLIENT_URL
 } = process.env;
-
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
-
 
 const QB_BASE_URL = ENVIRONMENT === 'sandbox'
   ? 'https://sandbox-quickbooks.api.intuit.com'
@@ -70,6 +56,30 @@ const adminUser = {
   passwordHash: await bcrypt.hash('admin123', 10) // hash this once
 };
 
+// app.use(cors({
+
+//   origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
+//   credentials: true, // Allow cookies to be sent
+
+// }));
+
+app.use(cors({
+  origin: CLIENT_URL || 'http://localhost:5173',
+
+}));
+app.use(cookieParser());
+app.use(express.json());
+app.use('/admin/items', itemRoutes);
+
+mongoose.connect(MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+
+
 // Admin login
 // app.post('/admin/login', async (req, res) => {
 //   const { email, password } = req.body;
@@ -83,7 +93,7 @@ const adminUser = {
 //         secure: true,//process.env.NODE_ENV === 'production',
 //         maxAge: 24 * 60 * 60 * 1000 // 1 day
 //        }
-       
+
 //     );
 //     res.json({ success: true });
 //   } else {
@@ -96,9 +106,9 @@ app.post('/admin/login', async (req, res) => {
   if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
     //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
     const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
-   
+
     return res.status(200).json({ token });
-    
+
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
   }
@@ -127,7 +137,7 @@ app.get('/admin/auth-check', (req, res) => {
     return res.status(401).send('No token');
   }
   const token = authHeader.split(' ')[1];
-  console.log('Token:', token);
+  //console.log('Token:', token);
   try {
     jwt.verify(token, SECRET);
     res.sendStatus(200);
@@ -148,8 +158,8 @@ app.post('/admin/logout', (req, res) => {
 });
 
 // Admin Routes to view and edit inventory
-app.get('/admin/inventory', requireAdmin,async (req, res) => {
- //app.get('/admin/inventory', async (req, res) => {
+app.get('/admin/inventory', requireAdmin, async (req, res) => {
+  //app.get('/admin/inventory', async (req, res) => {
   try {
     const items = await connectedDb.collection('item').find().toArray();
     console.log('Fetched items:', items);
@@ -159,8 +169,8 @@ app.get('/admin/inventory', requireAdmin,async (req, res) => {
   }
 });
 
-app.put('/admin/inventory/:id',requireAdmin, async (req, res) => {
- // app.put('/admin/inventory/:id', async (req, res) => {
+app.put('/admin/inventory/:id', requireAdmin, async (req, res) => {
+  // app.put('/admin/inventory/:id', async (req, res) => {
   const { id } = req.params;
   const update = req.body;
   console.log('Updating item:', id, update);
@@ -248,15 +258,16 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
   events.forEach(event => {
     const realmId = event.realmId;
     event.dataChangeEvent.entities.forEach(async entity => {
-      try {    
+      try {
         const accessToken = await getValidAccessToken(realmId);
-         //console.log('Access Token:', accessToken);
+        //console.log('Access Token:', accessToken);
         if (entity.name === 'Invoice') {
           if (entity.operation === 'Create') {
             console.log('New Invoice created:', entity.id);
             // Fetch invoice details + sync inventory
             await syncInvoiceToInventory(accessToken, realmId, entity.id);
             const invoice = await getInvoiceDetails(accessToken, realmId, entity.id);
+            // Save invoice in local inventory
             await saveInvoiceInLocalInventory(invoice, realmId);
           }
           else if (entity.operation === 'Update') {
@@ -266,6 +277,26 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
             console.log('Invoice deleted:', entity.id);
             await reverseInvoiceQuantities(entity.id);
           }
+        }
+
+        if (entity.name === 'Estimate') {
+          if (entity.operation === 'Create') {
+            console.log('New Estimate created:', entity.id);
+            // Fetch estimate details + sync inventory
+            await syncEstimateToInventory(accessToken, realmId, entity.id);
+            const estimate = await getEstimateDetails(accessToken, realmId, entity.id);
+            // Save estimate in local inventory
+            await saveEstimateInLocalInventory(estimate, realmId);
+          } else if (entity.operation === 'Update') {
+            console.log('Estimate updated:', entity.id);
+            // Sync updated estimate to inventory
+            await syncUpdatedEstimate(accessToken, realmId, entity.id);
+          }else if (entity.operation === 'Delete') {
+            console.log('Estimate deleted:', entity.id);
+            // Reverse quantities for deleted estimate
+            await reverseEstimateQuantities(entity.id);
+          }
+
         }
       } catch (err) {
         console.error(`❌ Failed to sync invoice ${entity.id}:`, err.message);

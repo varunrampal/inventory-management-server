@@ -1,5 +1,5 @@
 import { getInvoiceDetails } from './quickbooksClient.js';
-import { updateLocalInventory } from './inventoryService.js';
+import { updateLocalInventory } from './services/inventoryService.js';
 
 export const syncInvoiceToInventory = async (accessToken, realmId, invoiceId) => {
   try {

@@ -2,7 +2,7 @@
 import axios from 'axios';
 import { updateItemByQuickBooksId } from './item.js';
 
-export const syncEstimateToInventory = async (accessToken, realmId, estimateId, db) => {
+export const syncEstimateToInventory = async (accessToken, realmId, estimateId) => {
   try {
     const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/estimate/${estimateId}`;
 
@@ -14,6 +14,7 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId, 
     });
 
     const estimate = res.data.Estimate;
+    console.log(estimate)
 
     for (const line of estimate.Line) {
       if (line.SalesItemLineDetail) {
@@ -24,10 +25,10 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId, 
         console.log(`🔍 Estimate includes item ${itemRef.name} x${qty}`);
 
         // You could reserve stock here or just log it
-        await updateItemByQuickBooksId(db, itemId, {
-          lastEstimatedQty: qty,
-          lastEstimatedAt: new Date()
-        });
+        // await updateItemByQuickBooksId(db, itemId, {
+        //   lastEstimatedQty: qty,
+        //   lastEstimatedAt: new Date()
+        // });
       }
     }
 
