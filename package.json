@@ -10,11 +10,13 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.16.0",
     "node-cron": "^4.1.1",
+    "nodemailer": "^7.0.5",
     "open": "^10.1.2",
     "quickbooks": "^1.0.4"
   },
   "name": "inventory-management-server",
   "version": "1.0.0",
+  "type": "module", 
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",

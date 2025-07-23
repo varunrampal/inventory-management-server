@@ -20,7 +20,12 @@ export async function syncEstimatesToDB(accessToken, realmId) {
         });
 
         const estimates = response.data.QueryResponse.Estimate || [];
-
+        if (!Array.isArray(estimates)) {
+            console.warn('⚠️ No estimates found or response is not an array');
+            return; // Stop processing if no valid estimates
+        }
+        console.log(`✅ Syncing ${estimates.length} estimates`);
+        // Save each estimate to the local database
         for (const estimate of estimates) {
             const items = (estimate.Line || [])
                 .filter(line => line.SalesItemLineDetail)
@@ -39,16 +44,16 @@ export async function syncEstimatesToDB(accessToken, realmId) {
             const status = estimate.status || 'Active'; // Optional field fallback
 
             await Estimate.findOneAndUpdate(
-                { estimateId: estimate.Id },
+                { estimateId: estimate.Id, realmId: realmId },
                 {
-                    estimateId: estimate.Id,
-                    customerName: estimate.CustomerRef?.name,
-                    txnDate: estimate.TxnDate,
-                    totalAmount: estimate.TotalAmt,
-                    realmId,
-                    status,
-                    items,
-                    raw: estimate
+                    $set: {
+                        customerName: estimate.CustomerRef?.name,
+                        txnDate: estimate.TxnDate,
+                        totalAmount: estimate.TotalAmt,
+                        status,
+                        items,
+                        raw: estimate
+                    }
                 },
                 { upsert: true, new: true }
             );
@@ -206,3 +211,4 @@ export async function reverseEstimateQuantities(estimateId) {
     await connectedDb.collection('estimates').deleteOne({ estimateId });
   }
 }
+

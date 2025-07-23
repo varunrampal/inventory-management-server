@@ -3,7 +3,7 @@ import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import { getValidAccessToken } from './token.js';
-import { syncItemsFromQuickBooks } from './syncItemsFromQuickBooks.js';
+import { syncItemsFromQuickBooks } from './services/itemService.js';
 
 dotenv.config();
 
@@ -22,7 +22,7 @@ cron.schedule('*/5 * * * *', async () => {
     const accessToken = await getValidAccessToken(realmId);
     console.log(`🔑 Using access token: ${accessToken}`);
 
-    await syncItemsFromQuickBooks(accessToken, realmId, db);
+    await syncItemsFromQuickBooks(accessToken, realmId);
   } catch (err) {
     console.error('❌ Cron sync failed:', err);
   } finally {

@@ -13,7 +13,7 @@ router.get('/:id',requireAdmin,async (req, res) => {
     console.log('Fetching item with ID:', req.params.id);
     const item = await connectedDb.collection('item').findOne({ _id: new ObjectId(req.params.id) });
     if (!item) return res.status(404).json({ message: 'Item not found' });
-    console.log('Fetched item:', item);
+   // console.log('Fetched item:', item);
     res.json(item);
   } catch (err) {
     console.error(err);

@@ -1,6 +1,7 @@
 // tokens.js
 import axios from 'axios';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 dotenv.config();
 import Token from './models/token.js'; // Adjust the path as necessary
 
@@ -47,9 +48,15 @@ export const saveTokenToMongo = async (realmId, tokenData) => {
 export const getValidAccessToken = async (realmId) => {
   const tokenDoc = await Token.findOne({ realmId });
 
-  if (!tokenDoc) throw new Error(`❌ No token found for realmId: ${realmId}`);
+   if (!tokenDoc) throw new Error(`❌ No token found for realmId: ${realmId}`);
+  // if (!tokenDoc) {
+  //   console.warn(`⚠️ No token found for realmId: ${realmId}. Initiating auth flow...`);
+  //   const tokenEntry = await initiateAuthFlow(realmId); // Must return new token document
+  //   if (!tokenEntry) throw new Error('Authorization failed.');
+  // }
+  
 
-  const now = new Date();
+   const now = new Date();
 
   // Access token is still valid
   if (now < new Date(tokenDoc.expires_at)) {
@@ -102,3 +109,39 @@ export const getValidAccessToken = async (realmId) => {
 export const getTokenDoc = async (realmId, db) => {
   return await Token.findOne({ realmId });
 };
+
+/**
+ * Creates an OAuth2 authorization URL for QuickBooks and optionally stores a temp token entry.
+ * In a real app, you would redirect the user to this URL from the frontend.
+ */
+export async function initiateAuthFlow(realmId) {
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const REDIRECT_URI = process.env.REDIRECT_URI || 'http://localhost:4000/callback'; // Adjust as needed
+const SCOPE = 'com.intuit.quickbooks.accounting openid profile email phone address';
+const AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
+
+  const state = crypto.randomBytes(16).toString('hex');
+
+  const url = new URL(AUTH_URL);
+  url.searchParams.append('client_id', CLIENT_ID);
+  url.searchParams.append('redirect_uri', REDIRECT_URI);
+  url.searchParams.append('response_type', 'code');
+  url.searchParams.append('scope', SCOPE);
+  url.searchParams.append('state', state);
+
+  // Store the realmId + state mapping temporarily in DB
+  await Token.create({
+    realmId,
+    state,
+    accessToken: '',
+    refreshToken: '',
+    expiresAt: new Date(0)
+  });
+
+  console.log(`🔑 Redirect user to authorize QuickBooks realmId=${realmId}`);
+  console.log(`🌐 ${url.toString()}`);
+
+  // Optional: Return auth URL to frontend
+  return url.toString();
+}

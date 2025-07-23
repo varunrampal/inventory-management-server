@@ -4,9 +4,9 @@ import {
   getItemByQuickBooksId,
   createItem,
   updateItemByQuickBooksId
-} from './item.js';
+} from '../item.js';
 
-export const syncItemsFromQuickBooks = async (accessToken, realmId) => {
+export async function syncItemsFromQuickBooks(accessToken, realmId) {
   try {
     
     const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query?query=SELECT * FROM Item&minorversion=65`;
@@ -23,10 +23,11 @@ export const syncItemsFromQuickBooks = async (accessToken, realmId) => {
 
     for (const qbItem of items) {
       const quickbooksId = qbItem.Id;
-      const existing = await getItemByQuickBooksId(quickbooksId);
+      const existing = await getItemByQuickBooksId(quickbooksId, realmId);
 
       const itemData = {
         quickbooksId,
+        realmId,
         name: qbItem.Name,
         sku: qbItem.Sku || '',
         quantity: qbItem.QtyOnHand ?? 0,
@@ -42,7 +43,7 @@ export const syncItemsFromQuickBooks = async (accessToken, realmId) => {
         console.log(`🔁 Updated: ${itemData.name}`);
       } else {
         itemData.createdAt = new Date();
-        await createItem(db, itemData);
+        await createItem(itemData);
         console.log(`✅ Created: ${itemData.name}`);
       }
     }

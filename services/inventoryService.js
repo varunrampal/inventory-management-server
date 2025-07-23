@@ -1,12 +1,13 @@
 // inventoryService.js
 import db from '../db.js'; // your MongoDB connection
 import Invoice from '../models/invoice.js';
-const connectedDb = await db.connect();
+import Item from '../models/item.js';
+// const connectedDb = await db.connect();
 
-export const updateLocalInventory = async (itemId, qtyChange) => {
-  const collection = connectedDb.collection('item');
-
-  const item = await collection.findOne({ quickbooksId: itemId });
+export const updateLocalInventory = async (itemId, qtyChange, realmId) => {
+  // const collection = connectedDb.collection('items');
+  //const item = await collection.findOne({ itemId: itemId, realmId: realmId });
+  const item = await Item.findOne({ itemId: itemId, realmId: realmId });
 
   if (!item) {
     console.warn(`⚠️ Item not found in local inventory: ${itemId}`);
@@ -15,8 +16,13 @@ export const updateLocalInventory = async (itemId, qtyChange) => {
 
   const newQty = (item.quantity || 0) + qtyChange;
 
-  await collection.updateOne(
-    { quickbooksId: itemId },
+//  await collection.updateOne(
+//     { itemId: itemId, realmId: realmId },
+//     { $set: { quantity: newQty, updatedAt: new Date() } }
+//   );
+
+  await Item.updateOne(
+    { itemId: itemId, realmId: realmId },
     { $set: { quantity: newQty, updatedAt: new Date() } }
   );
 
@@ -53,14 +59,18 @@ await Invoice.create({
   console.log(`✅ Saved invoice ${invoice.Id} for customer ${invoice.CustomerRef?.name}`);
 };
 
-export async function reverseInvoiceQuantities(invoiceId) {
-  const invoice = await  connectedDb.collection('invoices').findOne({ invoiceId });
+// This function reverses the quantities of items in an invoice
+// It finds the invoice by its ID and realmId, then updates the quantities of each item
+export async function reverseInvoiceQuantities(invoiceId, realmId) {
+  //const invoice = await  connectedDb.collection('invoices').findOne({ invoiceId, realmId });
+   const invoice = await  Invoice.findOne({ invoiceId, realmId });
 
   if (invoice) {
     for (const item of invoice.items) {
-      await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: item.quantity } });
+      //await connectedDb.collection('items').updateOne({ itemId: item.itemId, realmId: realmId }, { $inc: { quantity: item.quantity } });
+      await Item.updateOne({ itemId: item.itemId, realmId: realmId }, { $inc: { quantity: item.quantity } });
     }
-
-    await connectedDb.collection('invoices').deleteOne({ invoiceId });
+    //await connectedDb.collection('invoices').deleteOne({ invoiceId });
+    await Invoice.deleteOne({ invoiceId });
   }
 }

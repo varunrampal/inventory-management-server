@@ -18,7 +18,7 @@ export const syncInvoiceToInventory = async (accessToken, realmId, invoiceId) =>
         console.log(`- ${itemName} (${itemId}): -${qty}`);
 
         // 🔁 Update your local inventory
-        await updateLocalInventory(itemId, -qty);
+        await updateLocalInventory(itemId, -qty, realmId);
       }
     }
   } catch (error) {

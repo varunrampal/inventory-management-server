@@ -2,11 +2,12 @@ import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import axios from 'axios';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import cookieParser from 'cookie-parser';
 import { ObjectId } from 'mongodb';
-
 import mongoose from 'mongoose';
 import { verifyWebhook } from './webhookHandler.js';
 import { syncInvoiceToInventory } from './syncInvoice.js';
@@ -23,13 +24,13 @@ import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
 import { requireAdmin } from './middleware/auth.js'; // For MongoDB ObjectId
 import itemRoutes from './routes/items.js';
+import estimateRoutes from './routes/estimates.js'; // Import your estimates routes
+import adminRoutes from './routes/adminRoutes.js'; // Import your admin routes
+import authRoutes from './routes/authRoutes.js'; // Import your auth routes
 //import './cron.js'
 import db from './db.js'; // your MongoDB connection
 dotenv.config();
 
-const app = express();
-
-const connectedDb = await db.connect();
 
 const {
   CLIENT_ID,
@@ -39,6 +40,27 @@ const {
   MONGO_URI,
   CLIENT_URL
 } = process.env;
+
+const app = express();
+app.use(cors({
+  origin: CLIENT_URL || 'http://localhost:5173',
+
+}));
+app.use(cookieParser());
+app.use(express.json());
+
+// Resolve __dirname in ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve the public directory
+app.use('/static', express.static(path.join(__dirname, 'public')));
+
+
+
+const connectedDb = await db.connect();
+
+
 
 const QB_BASE_URL = ENVIRONMENT === 'sandbox'
   ? 'https://sandbox-quickbooks.api.intuit.com'
@@ -63,13 +85,11 @@ const adminUser = {
 
 // }));
 
-app.use(cors({
-  origin: CLIENT_URL || 'http://localhost:5173',
 
-}));
-app.use(cookieParser());
-app.use(express.json());
 app.use('/admin/items', itemRoutes);
+app.use('/admin/estimates', estimateRoutes);
+app.use('/admin/sync', adminRoutes);
+app.use('/auth', authRoutes); // Serve static files for auth
 
 mongoose.connect(MONGO_URI, {
   useNewUrlParser: true,

@@ -9,13 +9,13 @@ const EstimateItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const EstimateSchema = new mongoose.Schema({
-  estimateId: { type: String, required: true, unique: true },
+  estimateId: { type: String, required: true },
+  realmId: { type: String, required: true },
   customerName: String,
   txnDate: String,
   totalAmount: Number,
-  realmId: String,
   items: [EstimateItemSchema],
   raw: mongoose.Schema.Types.Mixed, // full raw QuickBooks object (optional)
 }, { timestamps: true });
-
+EstimateSchema.index({ estimateId: 1, realmId: 1 }, { unique: true });
 export default mongoose.model('Estimate', EstimateSchema);
