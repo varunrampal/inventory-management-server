@@ -20,6 +20,8 @@ import {
   syncUpdatedEstimate,
   reverseEstimateQuantities
 } from './services/estimateService.js';
+import {getItemDetailsFromQB,createOrUpdateItem, deleteItem } from './services/itemService.js';
+import { updateLocalInventory } from './services/inventoryService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
 import { requireAdmin } from './middleware/auth.js'; // For MongoDB ObjectId
@@ -281,6 +283,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
       try {
         const accessToken = await getValidAccessToken(realmId);
         //console.log('Access Token:', accessToken);
+        // Handle different entity types
         if (entity.name === 'Invoice') {
           if (entity.operation === 'Create') {
             console.log('New Invoice created:', entity.id);
@@ -298,7 +301,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
             await reverseInvoiceQuantities(entity.id);
           }
         }
-
+      // Handle estimates and items similarly
         if (entity.name === 'Estimate') {
           if (entity.operation === 'Create') {
             console.log('New Estimate created:', entity.id);
@@ -318,8 +321,27 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
           }
 
         }
+        // Handle items
+        if (entity.name === 'Item') {
+          if (entity.operation === 'Create' || entity.operation === 'Update') {
+            console.log('New Item created/Updated:', entity.id);
+            // Handle new item creation logic here
+            const itemDetails = await getItemDetailsFromQB(accessToken, realmId, entity.id);
+            if (!itemDetails) {
+                console.warn(`⚠️ No item found for ID ${entity.id}`);
+                return null;
+            }
+            await createOrUpdateItem(itemDetails, realmId);
+
+          } else if (entity.operation === 'Delete') {
+             
+            console.log('Item deleted:', entity.id);
+            // Handle item deletion logic here
+            await deleteItemByQuickBooksId(entity.id);
+          }
+        }
       } catch (err) {
-        console.error(`❌ Failed to sync invoice ${entity.id}:`, err.message);
+        console.error(`❌ Failed to sync ${entity.id}:`, err.message);
       }
     });
   });

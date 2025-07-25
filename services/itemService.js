@@ -3,7 +3,8 @@ import axios from 'axios';
 import {
   getItemByQuickBooksId,
   createItem,
-  updateItemByQuickBooksId
+  updateItemByQuickBooksId,
+  createOrUpdateItemInDB
 } from '../item.js';
 
 export async function syncItemsFromQuickBooks(accessToken, realmId) {
@@ -53,3 +54,27 @@ export async function syncItemsFromQuickBooks(accessToken, realmId) {
     console.error('❌ Failed to sync items:', err.response?.data || err.message);
   }
 };
+
+export const getItemDetailsFromQB = async (accessToken, realmId, itemId) => {
+
+    console.log(`Fetching Item ${itemId} for Realm ${realmId} and Access Token ${accessToken}`);
+    const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/item/${itemId}`;
+
+    const res = await axios.get(url, {
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+        },
+    });
+
+    const qbItem = res.data?.Item;
+    console.log(`Fetched Item: ${qbItem}`);
+    return qbItem;
+};
+
+export const createOrUpdateItem = async (itemDetails, realmId) => {
+
+  await createOrUpdateItemInDB(itemDetails, realmId);
+
+  console.log(`✅ Item "${itemDetails.Name}" created/updated in local DB.`);
+};  

@@ -9,29 +9,47 @@ export const updateLocalInventory = async (itemId, qtyChange, realmId) => {
   //const item = await collection.findOne({ itemId: itemId, realmId: realmId });
   const item = await Item.findOne({ itemId: itemId, realmId: realmId });
 
-  if (!item) {
-    console.warn(`⚠️ Item not found in local inventory: ${itemId}`);
-    return;
-  }
+  // if (!item) {
+  //   console.warn(`⚠️ Item not found in local inventory: ${itemId}`);
+  //   return;
+  // }
 
-  const newQty = (item.quantity || 0) + qtyChange;
+ if (!item) {
+  console.warn(`⚠️ Item not found in local inventory: ${itemId}`);
+// ✅ Create new item with qtyChange as starting quantity
+    const newItem = new Item({
+      itemId,
+      realmId,
+      name: 'Unnamed Item', // or use external metadata if available
+      quantity: qtyChange,
+      createdAt: now,
+      updatedAt: now
+    });
 
-//  await collection.updateOne(
-//     { itemId: itemId, realmId: realmId },
-//     { $set: { quantity: newQty, updatedAt: new Date() } }
-//   );
+    await newItem.save();
+
+    console.log(`➕ Created new item ${itemId} with quantity ${qtyChange}`);
+  }else{
+
+      const newQty = (item.quantity || 0) + qtyChange;
 
   await Item.updateOne(
     { itemId: itemId, realmId: realmId },
     { $set: { quantity: newQty, updatedAt: new Date() } }
   );
 
+
+//  await collection.updateOne(
+//     { itemId: itemId, realmId: realmId },
+//     { $set: { quantity: newQty, updatedAt: new Date() } }
+//   );
+
+
   console.log(`✅ Updated ${item.name}: ${item.quantity} → ${newQty}`);
-};
+}
+}
 
-
-  
-export const saveInvoiceInLocalInventory = async (invoice,realmId) => {
+export const saveInvoiceInLocalInventory = async (invoice, realmId) => {
   console.log('invoice:', invoice);
 
   console.log('invoice.Line:', invoice.Line);

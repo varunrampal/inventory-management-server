@@ -56,3 +56,37 @@ export const deleteItemByQuickBooksId = async (quickbooksId) => {
   const result = await Item.deleteOne({ quickbooksId });
   return result.deletedCount > 0;
 };
+
+// Create or update item based on QuickBooks data
+// This function will be used to handle both creation and updates in one go
+export const createOrUpdateItemInDB = async (itemData, realmId) => {
+  // 3. Validate and map fields
+    if (!itemData?.Id || !itemData?.Name) {
+      console.warn('⚠️ Invalid item from QuickBooks');
+      return;
+    }
+
+    // 4. Create or upsert the item in local DB
+    await Item.updateOne(
+      { itemId: itemData.Id, realmId: realmId },
+      {
+        $set: {
+          name: itemData.Name,
+          sku: itemData.Sku || '',
+          type: itemData.Type,
+          active: itemData.Active,
+          quantity: itemData.QtyOnHand ?? 0,
+          price: itemData.UnitPrice ?? 0,
+          description: itemData.Description || '',
+          syncTime: new Date(itemData.MetaData?.LastUpdatedTime),
+          raw: itemData,
+          updatedAt: new Date(),
+          createdAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+
+   
+  };
+
