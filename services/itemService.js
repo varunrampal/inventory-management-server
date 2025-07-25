@@ -4,8 +4,9 @@ import {
   getItemByQuickBooksId,
   createItem,
   updateItemByQuickBooksId,
-  createOrUpdateItemInDB
-} from '../item.js';
+  createOrUpdateItemInDB,
+  deleteItemByQuickBooksId
+} from '../item.js';  
 
 export async function syncItemsFromQuickBooks(accessToken, realmId) {
   try {
@@ -77,4 +78,13 @@ export const createOrUpdateItem = async (itemDetails, realmId) => {
   await createOrUpdateItemInDB(itemDetails, realmId);
 
   console.log(`✅ Item "${itemDetails.Name}" created/updated in local DB.`);
-};  
+};
+
+export const deleteItem = async (quickbooksId) => {
+  try {
+     await deleteItemByQuickBooksId(quickbooksId);
+    console.log(`✅ Item with QuickBooks ID ${quickbooksId} deleted from local DB.`);
+  } catch (err) {
+    console.error(`❌ Failed to delete item with QuickBooks ID ${quickbooksId}:`, err.message);
+  }
+}

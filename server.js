@@ -317,7 +317,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
           }else if (entity.operation === 'Delete') {
             console.log('Estimate deleted:', entity.id);
             // Reverse quantities for deleted estimate
-            await reverseEstimateQuantities(entity.id);
+            await deleteItem(entity.id);
           }
 
         }
