@@ -24,6 +24,7 @@ import {getItemDetailsFromQB,createOrUpdateItem, deleteItem } from './services/i
 import { updateLocalInventory } from './services/inventoryService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
+import Item from './models/item.js'; // Import your Item model
 import { requireAdmin } from './middleware/auth.js'; // For MongoDB ObjectId
 import itemRoutes from './routes/items.js';
 import estimateRoutes from './routes/estimates.js'; // Import your estimates routes
@@ -180,10 +181,11 @@ app.post('/admin/logout', (req, res) => {
 });
 
 // Admin Routes to view and edit inventory
-app.get('/admin/inventory', requireAdmin, async (req, res) => {
-  //app.get('/admin/inventory', async (req, res) => {
+app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
+ const { realmId } = req.params;
   try {
-    const items = await connectedDb.collection('item').find().toArray();
+
+    const items = await connectedDb.collection('items').find({ realmId }).toArray();
     console.log('Fetched items:', items);
     res.json(items);
   } catch (err) {
