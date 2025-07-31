@@ -14,6 +14,11 @@ const EstimateSchema = new mongoose.Schema({
   customerName: String,
   txnDate: String,
   totalAmount: Number,
+  txnStatus: {
+  type: String,
+  enum: ['Pending', 'Accepted', 'Declined', 'Closed'],
+  default: 'Pending'
+},
   items: [EstimateItemSchema],
   raw: mongoose.Schema.Types.Mixed, // full raw QuickBooks object (optional)
 }, { timestamps: true });

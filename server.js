@@ -41,7 +41,8 @@ const {
   REDIRECT_URI,
   ENVIRONMENT,
   MONGO_URI,
-  CLIENT_URL
+  CLIENT_URL,
+  DEFAULT_SYNC_TYPE
 } = process.env;
 
 const app = express();
@@ -193,15 +194,14 @@ app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
   }
 });
 
-app.put('/admin/inventory/:id', requireAdmin, async (req, res) => {
-  // app.put('/admin/inventory/:id', async (req, res) => {
-  const { id } = req.params;
+app.put('/admin/inventory/:id/:realmId', requireAdmin, async (req, res) => {
+  const { id, realmId } = req.params;
   const update = req.body;
-  console.log('Updating item:', id, update);
+  console.log('Updating item:', id, 'in realm:', realmId, 'with data:', update);
   try {
     update.updatedAt = new Date();
-    const result = await connectedDb.collection('item').updateOne(
-      { _id: new ObjectId(id) },
+    const result = await connectedDb.collection('items').updateOne(
+      { _id: new ObjectId(id), realmId },
       { $set: update }
     );
     res.json({ success: result.modifiedCount > 0 });
@@ -278,6 +278,7 @@ app.get('/invoices', async (req, res) => {
 // It will sync the invoice to the local inventory
 app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) => {
   const events = req.body.eventNotifications;
+
   console.log('Call 1')
   events.forEach(event => {
     const realmId = event.realmId;
@@ -286,7 +287,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
         const accessToken = await getValidAccessToken(realmId);
         //console.log('Access Token:', accessToken);
         // Handle different entity types
-        if (entity.name === 'Invoice') {
+        if (entity.name === 'Invoice' && process.env.DEFAULT_SYNC_TYPE === 'invoices') {
           if (entity.operation === 'Create') {
             console.log('New Invoice created:', entity.id);
             // Fetch invoice details + sync inventory
@@ -304,7 +305,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
           }
         }
       // Handle estimates and items similarly
-        if (entity.name === 'Estimate') {
+        if (entity.name === 'Estimate' && process.env.DEFAULT_SYNC_TYPE === 'estimates') {
           if (entity.operation === 'Create') {
             console.log('New Estimate created:', entity.id);
             // Fetch estimate details + sync inventory

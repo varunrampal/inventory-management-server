@@ -153,6 +153,7 @@ export const saveEstimateInLocalInventory = async (estimate, realmId) => {
     console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}`);
 };
 
+
 export async function syncUpdatedEstimate(token, realmId, estimateId) {
   const res = await fetch(`https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/estimate/${estimateId}`, {
     headers: {
@@ -165,23 +166,27 @@ export async function syncUpdatedEstimate(token, realmId, estimateId) {
     console.error(`Failed to fetch estimate ${estimateId}:`, await res.text());
     return;
   }
+
+  //console.log(`✅ Fetched updated estimate ${JSON.stringify(await res.json())} from QuickBooks`);
     // Parse the response as JSON
   const estimate = (await res.json()).Estimate;
 
-    // Lookup old estimate from local DB
-  const oldEstimate = await Estimate.findOne({ estimateId });
+  //console.log( `Updating estimate ${estimate} in local inventory...`);
 
-  console.log(`estimate in local db: ${JSON.stringify(oldEstimate)}`);
+    // Lookup old estimate from local DB
+  const oldEstimate = await Estimate.findOne({ estimateId, realmId });
+
+  //console.log(`estimate in local db: ${JSON.stringify(oldEstimate)}`);
 
   // Reverse old quantities
   for (const item of oldEstimate.items) {
     const qty = Number(item.quantity) || 0;
     console.log(`Reversing quantity for item: ${item.name}, quantity: ${qty}`);
     // Update the item quantity in the local inventory
-    await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: qty} });
+    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: qty} });
   }
 
-  console.log(`Estimate Line from quickbooks: ${JSON.stringify(estimate.Line)}`);
+  //console.log(`Estimate Line from quickbooks: ${JSON.stringify(estimate.Line)}`);
   // Save new estimate & apply new quantities
   const newItems = estimate.Line.filter(line => line.SalesItemLineDetail).map(line => ({
     name: line.SalesItemLineDetail.ItemRef.name,
@@ -191,11 +196,22 @@ export async function syncUpdatedEstimate(token, realmId, estimateId) {
   console.log(`New items to update: ${JSON.stringify(newItems)}`);
 
   for (const item of newItems) {
-     await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: -item.quantity } });
+     await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: -item.quantity } });
   }
 
   // Update the estimate in the local database
-  await Estimate.updateOne({ estimateId }, { $set: { items: newItems } });
+await Estimate.updateOne(
+  { estimateId, realmId }, 
+  { 
+    $set: {
+      items: newItems,
+      txnStatus: estimate.TxnStatus,
+      'raw.TxnStatus': estimate.TxnStatus,
+      totalAmount: estimate.TotalAmt,
+      updatedAt: new Date()
+    }
+  }
+);
 }
 
 // This function reverses the quantities of items in an invoice
@@ -205,7 +221,7 @@ export async function reverseEstimateQuantities(estimateId) {
 
   if (estimate) {
     for (const item of estimate.items) {
-      await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: item.quantity } });
+      await connectedDb.collection('items').updateOne({ name: item.name, realmId: estimate.realmId }, { $inc: { quantity: item.quantity } });
     }
 
     await connectedDb.collection('estimates').deleteOne({ estimateId });

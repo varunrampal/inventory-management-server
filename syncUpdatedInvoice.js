@@ -17,7 +17,7 @@ export async function syncUpdatedInvoice(token, realmId, invoiceId) {
   const invoice = (await res.json()).Invoice;
 
     // Lookup old invoice from local DB
-  const oldInvoice = await connectedDb.collection('invoices').findOne({ invoiceId });
+  const oldInvoice = await connectedDb.collection('invoices').findOne({ invoiceId, realmId });
 
   console.log(`invoice in local db: ${JSON.stringify(oldInvoice)}`);
 
@@ -25,11 +25,9 @@ export async function syncUpdatedInvoice(token, realmId, invoiceId) {
   for (const item of oldInvoice.items) {
     const qty = Number(item.quantity) || 0;
     console.log(`Reversing quantity for item: ${item.name}, quantity: ${qty}`);
-    // Update the item quantity in the local inventory    
-    await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: qty} });
+    // Update the item quantity in the local inventory
+    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: qty } });
   }
-
-
   console.log(`Invoice Line from quickbooks: ${JSON.stringify(invoice.Line)}`);
   // Save new invoice & apply new quantities
   const newItems = invoice.Line.filter(line => line.SalesItemLineDetail).map(line => ({
@@ -40,8 +38,8 @@ export async function syncUpdatedInvoice(token, realmId, invoiceId) {
   console.log(`New items to update: ${JSON.stringify(newItems)}`);
 
   for (const item of newItems) {
-    await connectedDb.collection('item').updateOne({ name: item.name }, { $inc: { quantity: -item.quantity } });
+    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: -item.quantity } });
   }
 
-  await connectedDb.collection('invoices').updateOne({ invoiceId }, { $set: { items: newItems } });
+  await connectedDb.collection('invoices').updateOne({ invoiceId, realmId }, { $set: { items: newItems } });
 }
