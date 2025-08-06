@@ -20,7 +20,7 @@ import {
   syncUpdatedEstimate,
   reverseEstimateQuantities
 } from './services/estimateService.js';
-import {getItemDetailsFromQB,createOrUpdateItem, deleteItem } from './services/itemService.js';
+import { getItemDetailsFromQB, createOrUpdateItem, deleteItem } from './services/itemService.js';
 import { updateLocalInventory } from './services/inventoryService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
@@ -181,9 +181,51 @@ app.post('/admin/logout', (req, res) => {
   return res.status(200).json({ message: 'Logged out' });
 });
 
+
+//Get low stock items
+// This route fetches items with quantity less than 100
+app.get('/admin/inventory/lowstock/:realmId', requireAdmin, async (req, res) => {
+  const { realmId } = req.params;
+  const { search = '', page = 1, limit = 10 } = req.query;
+  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const query = search
+    ? { name: { $regex: new RegExp(search, 'i') }, realmId, quantity: { $lt: 100 } }
+    : {};
+
+  try {
+
+    const [items, total] = await Promise.all([
+      Item.find({ ...query, quantity: { $lt: 100 } })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ updatedAt: -1 }),
+      Item.countDocuments({ ...query, quantity: { $lt: 100 } })
+    ]);
+
+    res.json({
+      items,
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+  } catch (err) {
+    console.error('Item fetch error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+
+
+
+  //   const items = await connectedDb.collection('items').find({ realmId, quantity: { $lt: 100 } }).toArray();
+  //   console.log('Fetched low stock items:', items);
+  //   res.json(items);
+  // } catch (err) {
+  //   res.status(500).json({ error: 'Failed to fetch inventory' });
+  // }
+});
+
 // Admin Routes to view and edit inventory
 app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
- const { realmId } = req.params;
+  const { realmId } = req.params;
   try {
 
     const items = await connectedDb.collection('items').find({ realmId }).toArray();
@@ -194,6 +236,7 @@ app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
   }
 });
 
+// Update an item
 app.put('/admin/inventory/:id/:realmId', requireAdmin, async (req, res) => {
   const { id, realmId } = req.params;
   const update = req.body;
@@ -304,7 +347,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
             await reverseInvoiceQuantities(entity.id);
           }
         }
-      // Handle estimates and items similarly
+        // Handle estimates and items similarly
         if (entity.name === 'Estimate' && process.env.DEFAULT_SYNC_TYPE === 'estimates') {
           if (entity.operation === 'Create') {
             console.log('New Estimate created:', entity.id);
@@ -317,7 +360,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
             console.log('Estimate updated:', entity.id);
             // Sync updated estimate to inventory
             await syncUpdatedEstimate(accessToken, realmId, entity.id);
-          }else if (entity.operation === 'Delete') {
+          } else if (entity.operation === 'Delete') {
             console.log('Estimate deleted:', entity.id);
             // Reverse quantities for deleted estimate
             await deleteItem(entity.id);
@@ -331,13 +374,13 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
             // Handle new item creation logic here
             const itemDetails = await getItemDetailsFromQB(accessToken, realmId, entity.id);
             if (!itemDetails) {
-                console.warn(`⚠️ No item found for ID ${entity.id}`);
-                return null;
+              console.warn(`⚠️ No item found for ID ${entity.id}`);
+              return null;
             }
             await createOrUpdateItem(itemDetails, realmId);
 
           } else if (entity.operation === 'Delete') {
-             
+
             console.log('Item deleted:', entity.id);
             // Handle item deletion logic here
             await deleteItemByQuickBooksId(entity.id);
