@@ -236,7 +236,7 @@ router.get('/item-by-id/:itemId/:realmId/reserved', requireAdmin, async (req, re
 });
 
 //get all estimates with pagination
-router.get('/estimates/:realmId', async (req, res) => {
+router.get('/:realmId', async (req, res) => {
   const { realmId } = req.params;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
@@ -257,6 +257,29 @@ router.get('/estimates/:realmId', async (req, res) => {
       limit,
       total,
       totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    console.error('Error fetching estimates:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /estimate/details/:estimateId/:realmId
+// This route fetches details of a specific estimate by estimateId and realmId
+router.get('/details/:estimateId/:realmId', requireAdmin, async (req, res) => {
+  const { estimateId, realmId } = req.params;
+  console.log('Fetching estimate details for estimateId:', estimateId, 'and realmId:', realmId);
+
+  try {
+     const estimate = await Estimate.find({
+       estimateId,
+       realmId
+     });
+    if (!estimate || estimate.length === 0) {
+      return res.status(404).json({ message: 'Estimate not found' });
+    } 
+    res.json({
+      estimate
     });
   } catch (err) {
     console.error('Error fetching estimates:', err);

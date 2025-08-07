@@ -66,3 +66,18 @@ export async function syncInvoicesToDB(accessToken, realmId) {
   }
    console.log(`✅ Synced ${invoices.length} invoices for realmId: ${realmId}`);
 }
+
+export async function createInvoiceInQuickBooks(invoiceData, realmId, accessToken) {
+
+  const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/invoice?minorversion=65`;
+
+  const res = await axios.post(url, invoiceData, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    }
+  });
+
+  return res.data.Invoice;
+}
