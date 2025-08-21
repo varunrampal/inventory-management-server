@@ -2,6 +2,9 @@
 import express from 'express';
 import { requireAdmin } from '../middleware/auth.js';
 import Estimate from '../models/estimate.js'; // your Estimate model
+import Item from '../models/item.js';
+import Invoice from '../models/invoice.js';
+import { getValidAccessToken } from '../token.js';
 import db from '../db.js'; // your MongoDB connection
 
 const connectedDb = await db.connect();
@@ -148,7 +151,6 @@ console.log(filter.txnDate, 'Filter Date Range:', startDate, endDate);
   }
 });
 
-
 // GET /admin/estimates/item/:itemName/reserved?status=Active
 router.get('/item-by-name/:itemName/:realmId/reserved', requireAdmin, async (req, res) => {
 
@@ -271,10 +273,17 @@ router.get('/details/:estimateId/:realmId', requireAdmin, async (req, res) => {
   console.log('Fetching estimate details for estimateId:', estimateId, 'and realmId:', realmId);
 
   try {
-     const estimate = await Estimate.find({
-       estimateId,
-       realmId
-     });
+    //  const estimate = await Estimate.find({
+    //    estimateId,
+    //    realmId
+    //  });
+
+     const estimate = await Estimate.findOne({ estimateId, realmId })
+      .populate({ path: "packages", match: { realmId } });
+      // .populate({ path: "invoices", match: { realmId } });
+
+      console.log('Fetched estimate:', estimate); 
+
     if (!estimate || estimate.length === 0) {
       return res.status(404).json({ message: 'Estimate not found' });
     } 
@@ -421,5 +430,115 @@ if (startDate && endDate) {
     res.status(500).json({ message: 'Server error' });
   }
 });
+
+// POST /estimates/fulfill
+router.post('/fulfill', requireAdmin, async (req, res) => {
+  const { estimateId, realmId, quantities } = req.body;
+  console.log('Fulfilling estimate:', estimateId, 'for realmId:', realmId, 'with quantities:', quantities);
+  if (!estimateId || !realmId || !quantities)
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+
+  try {
+    const estimate = await Estimate.findOne({ estimateId, realmId });
+    console.log('Fetched estimate:', estimate);
+    if (!estimate) return res.status(404).json({ success: false, message: 'Estimate not found' });
+
+    const fulfilledLines = [];
+    const warnings = [];
+
+    for (const item of estimate.items) {
+      const itemId = item.itemId;
+      const qtyToFulfill = parseInt(quantities[itemId] ?? 0);
+      if (qtyToFulfill <= 0) continue;
+
+      const alreadyFulfilled = item.fulfilled || 0;
+      const remaining = item.quantity - alreadyFulfilled;
+      
+      console.log(`Item: ${item.name}, Already Fulfilled: ${alreadyFulfilled}, Remaining: ${remaining}, Qty to Fulfill: ${qtyToFulfill}`);
+      
+      if (qtyToFulfill > remaining) {
+        warnings.push(`⚠️ "${item.name}" selected ${qtyToFulfill} but only ${remaining} remaining. Using ${remaining}.`);
+      }
+
+      const actualQty = Math.min(qtyToFulfill, remaining);
+      if (actualQty <= 0) continue;
+
+      // Update fulfilled quantity in estimate
+      item.fulfilled = alreadyFulfilled + actualQty;
+
+      console.log(`Fulfilling ${actualQty} of "${item.name}" (itemId: ${itemId})`);
+      // Update item inventory (allow negative)
+      await Item.updateOne(
+        { itemId, realmId },
+        { $inc: { quantity: -actualQty }, $set: { updatedAt: new Date() } },
+        { upsert: true }
+      );
+
+      fulfilledLines.push({
+        itemId,
+        name: item.name,
+        quantity: actualQty,
+        rate: item.rate,
+        amount: actualQty * item.rate
+      });
+    }
+
+    if (fulfilledLines.length === 0) {
+      return res.json({ success: false, message: 'No valid quantities selected' });
+    }
+
+
+    console.log('save estimate changes:', estimateId, realmId, estimate.items);
+    // Save estimate changes
+    await Estimate.updateOne({ estimateId, realmId }, { $set: { items: estimate.items } });
+
+return {
+    success: true,
+    invoiceId: 120,
+    warnings
+  };
+
+    // Create QuickBooks invoice
+    const accessToken = await getValidAccessToken(realmId);
+    const invoiceData = {
+      CustomerRef: { value: estimate.raw?.CustomerRef?.value },
+      TxnDate: new Date().toISOString().split('T')[0],
+      Line: fulfilledLines.map((item) => ({
+        Amount: item.amount,
+        DetailType: 'SalesItemLineDetail',
+        SalesItemLineDetail: {
+          ItemRef: { value: item.itemId },
+          Qty: item.quantity,
+          UnitPrice: item.rate
+        }
+      }))
+    };
+//Create invoice in QuickBooks
+ console.log('Creating QuickBooks invoice with data:', invoiceData);
+ const qbInvoice = await createInvoiceInQuickBooks(invoiceData, realmId, accessToken);
+
+ // Save invoice to local DB
+  console.log('Saving QuickBooks invoice to local DB:', qbInvoice);
+  await Invoice.create({
+    invoiceId: qbInvoice.Id,
+    estimateId: estimate.estimateId,
+    realmId,
+    items: packages,
+    txnDate: qbInvoice.TxnDate,
+    totalAmount: qbInvoice.TotalAmt,
+    raw: qbInvoice
+  });
+
+  return {
+    success: true,
+    invoiceId: qbInvoice.Id,
+    warnings
+  };
+  } catch (err) {
+    console.error('Fulfill error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 
 export default router;

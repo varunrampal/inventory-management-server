@@ -1,6 +1,6 @@
 // project/items.js
 
-import Item from './models/item.js';
+import Item from './models/item.js'; // Import your Item model
 export const createItem = async (item) => {
 
 const now = new Date();

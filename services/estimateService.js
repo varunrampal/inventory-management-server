@@ -228,3 +228,79 @@ export async function reverseEstimateQuantities(estimateId) {
   }
 }
 
+export function computeRemainingQuantities(estimate) {
+  // returns Map<itemId, {remaining, lineRef}>
+  const map = new Map();
+  for (const line of estimate.items || []) {
+    const ordered = Number(line.quantity || 0);
+    const fulfilled = Number(line.fulfilled || 0);
+    map.set(line.itemId, {
+      remaining: Math.max(0, ordered - fulfilled),
+      lineRef: line
+    });
+  }
+  return map;
+}
+
+export function computeRemainingQuantitiesOfEstimate(estimateDoc) {
+  const map = new Map();
+
+  const items = Array.isArray(estimateDoc?.items) ? estimateDoc.items : [];
+  for (const line of items) {
+    const ordered   = Number(line?.quantity ?? 0);
+    const fulfilled = Number(line?.fulfilled ?? 0);
+    const remaining = Math.max(0, ordered - fulfilled);
+
+    // Prefer itemId; fall back to name so older docs still work
+    const key = line?.itemId != null ? String(line.itemId) : String(line?.name ?? '').trim();
+    if (!key) continue; // skip totally malformed rows
+
+    map.set(key, { remaining, lineRef: line });
+  }
+  return map;
+}
+
+
+export function findItemIdInRaw(raw, itemName) {
+  const ln = (raw?.Line || []).find(
+    l => l.DetailType === 'SalesItemLineDetail' &&
+      String(l.SalesItemLineDetail?.ItemRef?.name || '').trim() === itemName
+  );
+  return ln?.SalesItemLineDetail?.ItemRef?.value ? String(ln.SalesItemLineDetail.ItemRef.value) : null;
+}
+export function findRateInRaw(raw, itemName) {
+  const ln = (raw?.Line || []).find(
+    l => l.DetailType === 'SalesItemLineDetail' &&
+      String(l.SalesItemLineDetail?.ItemRef?.name || '').trim() === itemName
+  );
+  return ln?.SalesItemLineDetail?.UnitPrice;
+}
+
+
+// **
+//  * Builds a Map to look up an estimate line by:
+//  *  - itemId (exact string)
+//  *  - item name (case-insensitive)
+//  * Returns: Map key -> { remaining, lineRef }
+
+export function buildRemainingIndex(estimate) {
+  const map = new Map();
+  const items = Array.isArray(estimate?.items) ? estimate.items : [];
+
+  for (const line of items) {
+    const ordered = Number(line?.quantity ?? 0);
+    const fulfilled = Number(line?.fulfilled ?? 0);
+    const remaining = Math.max(0, ordered - fulfilled);
+    const name = String(line?.name ?? '').trim();
+    const itemId = (line?.itemId != null) ? String(line.itemId) : null;
+
+    const value = { remaining, lineRef: line };
+
+    // key by itemId (exact) if present
+    if (itemId) map.set(itemId, value);
+
+    // key by lowercased name for fallback
+    if (name) map.set(name.toLowerCase(), value);
+  }
+  return map;
+}

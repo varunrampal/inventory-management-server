@@ -1,6 +1,6 @@
 // invoiceService.js
 import db from '../db.js'; // your MongoDB connection
-import Invoice from '../models/invoice.js';
+import Invoice from '../models/invoice.js'; // Import your Invoice model
 import axios from 'axios';
 const connectedDb = await db.connect();
 

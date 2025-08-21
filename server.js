@@ -30,6 +30,7 @@ import itemRoutes from './routes/items.js';
 import estimateRoutes from './routes/estimates.js'; // Import your estimates routes
 import adminRoutes from './routes/adminRoutes.js'; // Import your admin routes
 import authRoutes from './routes/authRoutes.js'; // Import your auth routes
+import packageRoutes from './routes/packagesRoute.js';
 //import './cron.js'
 import db from './db.js'; // your MongoDB connection
 dotenv.config();
@@ -92,6 +93,7 @@ const adminUser = {
 
 app.use('/admin/items', itemRoutes);
 app.use('/admin/estimates', estimateRoutes);
+app.use('/admin/packages', packageRoutes);
 app.use('/admin/sync', adminRoutes);
 app.use('/auth', authRoutes); // Serve static files for auth
 
