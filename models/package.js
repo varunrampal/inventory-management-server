@@ -19,7 +19,8 @@ const pkgSchema = new mongoose.Schema({
   packageDate: { type: Date, required: true },      // e.g., today by default
   shipmentDate: { type: Date },                     // when it ships/leaves
   driverName: { type: String },                     // who’s delivering
-  packageCode: { type: String, unique: true },      // human-friendly ID
+  packageCode: { type: String, unique: true },
+  quantities: { type: Map, of: Number, default: {} },      // human-friendly ID
 
   totals: {
     lines: { type: Number, default: 0 },

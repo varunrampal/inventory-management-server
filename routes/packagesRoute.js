@@ -5,8 +5,10 @@ import Package from '../models/package.js';
 import { computeRemainingQuantities, computeRemainingQuantitiesOfEstimate, 
     findItemIdInRaw, 
     findRateInRaw, 
-    buildRemainingIndex 
+    buildRemainingIndex,
+    recomputeEstimateFulfilled 
 } from '../services/estimateService.js'; // Adjust import path as needed
+import { requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -311,6 +313,7 @@ router.post('/create', async (req, res) => {
         customerName: estimate.customerName,
         txnDate: estimate.txnDate
       },
+      quantities,
       status: 'Created' // later: 'Invoiced' after you create a QB invoice
       // packageCode is auto-generated in Package model pre('save')
     });
@@ -363,14 +366,187 @@ router.get('/list/:estimateId/packages', async (req, res) => {
 });
 
 
-router.get('/:id', async (req, res) => {
+// router.get('/:id', async (req, res) => {
+//   try {
+//     const pkg = await Package.findById(req.params.id).lean();
+// // res.json({ ...pkg, id: String(pkg._id) });;
+//     if (!pkg) return res.status(404).json({ message: 'Not found' });
+
+// const estimate = await Estimate.findOne({ estimateId: pkg.estimateId, realmId: pkg.realmId }).lean();
+
+// // Return items from the estimate so UI can show ordered & fulfilled
+//   res.json({ ...pkg, items: estimate?.items ?? [], estimateId: estimate?.estimateId, customerName: estimate?.customerName });
+//     //res.json({ ...pkg, id: String(pkg._id) });
+//   } catch (e) {
+//     res.status(500).json({ message: e.message });
+//   }
+// });
+
+router.get("/:id", requireAdmin, async (req, res) => {
+  const pkg = await Package.findById(req.params.id).lean();
+  if (!pkg) return res.status(404).send("Not found");
+
+  const estimate = await Estimate.findOne({
+    estimateId: pkg.estimateId,
+    realmId: pkg.realmId,
+  }).lean();
+
+  const keyOf = (row) =>
+    String(row?.itemId ?? row?.ItemRef?.value ?? row?.name ?? "");
+
+  // lines index (so we can grab per-package qty defaults if you want)
+  const lineByKey = Object.fromEntries(
+    (pkg.lines || []).map((ln) => {
+      const k = keyOf(ln);
+      return [k, { ...ln, itemId: k }];
+    })
+  );
+
+  // normalize estimate items with a real key
+  const items = (estimate?.items || []).map((it) => {
+    const k = keyOf(it);
+    return {
+      itemId: k,
+      name: it.name,
+      quantity: Number(it.quantity ?? 0),   // ordered
+      fulfilled: Number(it.fulfilled ?? 0), // global fulfilled
+    };
+  });
+
+  // normalize quantities map for THIS package
+  const quantities = {};
+  // choose source of truth: pkg.quantities map, else fall back to pkg.lines qty
+  for (const it of items) {
+    const k = it.itemId;
+    const qFromPkg = pkg.quantities?.[k];
+    const qFromLines = lineByKey[k]?.quantity;
+    quantities[k] = Number(
+      qFromPkg ?? (Number.isFinite(qFromLines) ? qFromLines : 0)
+    );
+  }
+
+  res.json({
+    _id: pkg._id,
+    packageCode: pkg.packageCode,
+    estimateId: estimate?.estimateId ?? pkg.estimateId,
+    realmId: pkg.realmId,
+    customerName: estimate?.customerName ?? pkg.snapshot?.customerName,
+    packageDate: pkg.packageDate,
+    shipmentDate: pkg.shipmentDate,
+    driverName: pkg.driverName,
+    notes: pkg.notes,
+    items,        // <- now each has itemId
+    quantities,   // <- map keyed by itemId
+    totals: pkg.totals,
+    status: pkg.status,
+    snapshot: pkg.snapshot,
+    lines: Object.values(lineByKey), // normalized too (optional)
+    createdAt: pkg.createdAt,
+    updatedAt: pkg.updatedAt,
+    quantities: pkg.quantities,
+  });
+});
+
+// server/routes/packages.js
+router.put("/:id", requireAdmin, async (req, res) => {
   try {
     const pkg = await Package.findById(req.params.id);
-    if (!pkg) return res.status(404).json({ message: 'Not found' });
-    res.json({ package: pkg });
+    if (!pkg) return res.status(404).send("Not found");
+
+    const { shipmentDate, driverName, notes } = req.body;
+
+    // 1) clean incoming quantities
+    const cleaned = Object.fromEntries(
+      Object.entries(req.body.quantities || {})
+        .filter(([k]) => k && k !== "undefined")
+        .map(([k, v]) => [String(k), Number(v || 0)])
+    );
+   console.log(`Updating package ${pkg._id} with quantities:`, cleaned);
+    // 2) assign fields
+    if (shipmentDate !== undefined) pkg.shipmentDate = shipmentDate;
+    if (driverName !== undefined) pkg.driverName = driverName;
+    if (notes !== undefined) pkg.notes = notes;
+
+    // 3) **replace** the whole quantities object (no .set)
+    pkg.set("quantities", cleaned);    // ✅ works for Map or Object types
+
+    // If your schema uses plain Object, uncomment the next line in case Mongoose misses changes:
+    // pkg.markModified("quantities");
+
+    await pkg.save();
+
+    console.log(`Package ${pkg._id} updated successfully`);
+
+    // (optional) if you recompute estimate fulfillment:
+    await recomputeEstimateFulfilled({ estimateId: pkg.estimateId, realmId: pkg.realmId });
+
+    res.json({ ok: true, id: pkg._id });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(500).send(e.message || "Error");
   }
 });
+
+
+// UPDATE package
+// router.put("/:id", requireAdmin, async (req, res) => {
+//   try {
+//     const { shipmentDate, driverName, notes, quantities } = req.body;
+//     console.log(`Updating package ${req.params.id} with data:`, req.body);
+//     const pkg = await Package.findById(req.params.id);
+//     if (!pkg) return res.status(404).send("Not found");
+
+//     if (shipmentDate !== undefined) pkg.shipmentDate = shipmentDate;
+//     if (driverName !== undefined) pkg.driverName = driverName;
+//     if (notes !== undefined) pkg.notes = notes;
+
+//     // Store only per-package quantities here (source of truth for this package)
+//     if (quantities && typeof quantities === "object") {
+//       // ensure numbers
+//       for (const [k, v] of Object.entries(quantities)) {
+//       //  pkg.quantities.set(k, Number(v || 0)); // if using Map; adjust if plain object
+//          pkg.set(`quantities.${k}`, v);
+//       }
+//     }
+
+//     await pkg.save();
+//     console.log(`Package ${pkg._id} updated successfully`);
+
+//     // Important: recompute Estimate items.fulfilled (global view)
+//     await recomputeEstimateFulfilled({ estimateId: pkg.estimateId, realmId: pkg.realmId });
+//     console.log(`Recomputed fulfilled for estimate ${pkg.estimateId} in realm ${pkg.realmId}`);
+//     res.json({ ok: true, id: pkg._id });
+//   } catch (e) {
+//     res.status(500).send(e.message || "Error");
+//   }
+// });
+
+
+// router.put("/:id", requireAdmin, async (req, res) => {
+//   try {
+//     const { shipmentDate, driverName, notes, quantities } = req.body;
+
+//     const pkg = await Package.findById(req.params.id);
+//     if (!pkg) return res.status(404).send("Not found");
+
+//     if (shipmentDate !== undefined) pkg.shipmentDate = shipmentDate;
+//     if (driverName !== undefined) pkg.driverName = driverName;
+//     if (notes !== undefined) pkg.notes = notes;
+
+//     // Update fulfilled quantities per item
+//     if (quantities && typeof quantities === "object") {
+//       // pkg.items: [{ itemId, name, quantity, fulfilled }]
+//       pkg.items = (pkg.items || []).map((it) => {
+//         const nextFulfilled = Number(quantities[it.itemId] ?? it.fulfilled ?? 0);
+//         return { ...it, fulfilled: nextFulfilled };
+//       });
+//       pkg.markModified("items");
+//     }
+
+//     await pkg.save();
+//     res.json({ ok: true, id: pkg._id });
+//   } catch (e) {
+//     res.status(500).send(e.message || "Error");
+//   }
+// });
 
 export default router;

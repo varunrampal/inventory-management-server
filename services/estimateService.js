@@ -1,5 +1,6 @@
 import axios from 'axios';
 import Estimate from '../models/estimate.js'; // Assuming you have an Estimate model defined
+import Package from '../models/package.js';
 import { updateItemByQuickBooksId } from '../item.js'; // Adjust the import path as necessary
 import { updateLocalInventory } from './inventoryService.js';
 import Item from '../models/item.js'; // Assuming you have an Item model defined
@@ -303,4 +304,47 @@ export function buildRemainingIndex(estimate) {
     if (name) map.set(name.toLowerCase(), value);
   }
   return map;
+}
+
+
+export async function recomputeEstimateFulfilled({ estimateId, realmId }) {
+  // Sum this estimate's package quantities by item key
+  const totals = await Package.aggregate([
+    { $match: { estimateId, realmId } },
+    { $project: { pairs: { $objectToArray: "$quantities" } } },
+    { $unwind: "$pairs" },
+    { $group: { _id: "$pairs.k", total: { $sum: { $toDouble: "$pairs.v" } } } },
+  ]);
+  const totalsByKey = Object.fromEntries(totals.map(t => [String(t._id), t.total]));
+console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in realm ${realmId}`);
+  const est = await Estimate.findOne({ estimateId, realmId });
+  if (!est) return;
+
+  let changed = false;
+
+  for (const it of est.items || []) {
+    // 🔒 ensure itemId exists (temporary fallback to name)
+    if (!it.itemId) { it.itemId = it.name; changed = true; }
+
+    const key = String(it.itemId);
+    const summed = Number(totalsByKey[key] || 0);
+    const ordered = Number(it.quantity ?? Infinity);
+
+    const nextFulfilled = Math.min(summed, ordered);
+    if (it.fulfilled !== nextFulfilled) {
+      it.fulfilled = nextFulfilled;
+      changed = true;
+    }
+  }
+
+  console.log(`Recomputed fulfilled quantities for estimate ${estimateId}:`, est.items);
+
+  if (changed) est.markModified("items");
+  // Guard right before save
+  for (const [i, it] of (est.items || []).entries()) {
+    if (!it.itemId) throw new Error(`Estimate items missing itemId at index ${i}`);
+  }
+
+  console.log(`Saving updated estimate ${estimateId} in realm ${realmId}`);
+  await est.save();
 }
