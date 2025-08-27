@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from "mongoose";
 import Estimate from '../models/estimate.js';
 import Item from '../models/item.js'; // if you want to decrement stock
 import Package from '../models/package.js';
@@ -6,7 +7,8 @@ import { computeRemainingQuantities, computeRemainingQuantitiesOfEstimate,
     findItemIdInRaw, 
     findRateInRaw, 
     buildRemainingIndex,
-    recomputeEstimateFulfilled 
+    recomputeEstimateFulfilled,
+    recomputeFulfilledForEstimate
 } from '../services/estimateService.js'; // Adjust import path as needed
 import { requireAdmin } from '../middleware/auth.js';
 
@@ -485,6 +487,36 @@ router.put("/:id", requireAdmin, async (req, res) => {
     res.status(500).send(e.message || "Error");
   }
 });
+
+router.delete("/:id", async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    console.log('deleting package:', req.params.id);
+    await session.withTransaction(async () => {
+      const pkg = await Package.findById(req.params.id).session(session);
+      if (!pkg) return res.status(404).send("Package not found");
+
+      // SOFT DELETE is safer (keeps history)
+      // pkg.deletedAt = new Date();
+      // await pkg.save({ session });
+      await Package.deleteOne({ _id: req.params.id }).session(session);
+     console.log('pkg deleted:', req.params.id);
+      const estimate = await recomputeFulfilledForEstimate(
+        { estimateId: pkg.estimateId, realmId: pkg.realmId },
+        session
+      );
+      console.log('estimate adjusted:', pkg.estimateId);
+      res.json({ success: true, estimate });
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).send(e.message);
+  } finally {
+    session.endSession();
+  }
+});
+
+
 
 
 // UPDATE package

@@ -348,3 +348,27 @@ console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in real
   console.log(`Saving updated estimate ${estimateId} in realm ${realmId}`);
   await est.save();
 }
+
+export async function recomputeFulfilledForEstimate({ estimateId, realmId }, session) {
+  // Sum quantities per item from all *active* (non-deleted) packages for this estimate
+  const sums = await Package.aggregate([
+    { $match: { estimateId, realmId, deletedAt: { $exists: false } } },
+    { $unwind: "$items" },
+    { $group: { _id: "$items.itemId", total: { $sum: "$items.quantity" } } },
+  ]).session(session);
+
+  const sumMap = new Map(sums.map(s => [String(s._id), s.total]));
+
+  const estimate = await Estimate.findOne({ estimateId, realmId }).session(session);
+  if (!estimate) throw new Error("Estimate not found");
+
+  estimate.items = estimate.items.map(it => {
+    const summed = sumMap.get(String(it.itemId)) || 0;
+    // Clamp to not exceed ordered quantity if you want
+    const fulfilled = Math.min(summed, it.quantity ?? summed);
+    return { ...it.toObject?.() ?? it, fulfilled };
+  });
+
+  await estimate.save({ session });
+  return estimate;
+}
