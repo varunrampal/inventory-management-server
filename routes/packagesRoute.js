@@ -8,7 +8,8 @@ import { computeRemainingQuantities, computeRemainingQuantitiesOfEstimate,
     findRateInRaw, 
     buildRemainingIndex,
     recomputeEstimateFulfilled,
-    recomputeFulfilledForEstimate
+    recomputeFulfilledForEstimate,
+    recomputeEstimateFulfilledOnDelete
 } from '../services/estimateService.js'; // Adjust import path as needed
 import { requireAdmin } from '../middleware/auth.js';
 
@@ -445,7 +446,7 @@ router.get("/:id", requireAdmin, async (req, res) => {
     lines: Object.values(lineByKey), // normalized too (optional)
     createdAt: pkg.createdAt,
     updatedAt: pkg.updatedAt,
-    quantities: pkg.quantities,
+    //quantities: pkg.quantities,
   });
 });
 
@@ -500,10 +501,14 @@ router.delete("/:id", async (req, res) => {
       // pkg.deletedAt = new Date();
       // await pkg.save({ session });
       await Package.deleteOne({ _id: req.params.id }).session(session);
-     console.log('pkg deleted:', req.params.id);
-      const estimate = await recomputeFulfilledForEstimate(
-        { estimateId: pkg.estimateId, realmId: pkg.realmId },
-        session
+     console.log('pkg deleted:', req.params.id); 
+      // const estimate = await recomputeFulfilledForEstimate(
+      //   { estimateId: pkg.estimateId, realmId: pkg.realmId },
+      //   session
+      // );
+
+          const estimate = await recomputeEstimateFulfilledOnDelete(
+        { estimateId: pkg.estimateId, realmId: pkg.realmId },session
       );
       console.log('estimate adjusted:', pkg.estimateId);
       res.json({ success: true, estimate });
@@ -515,9 +520,6 @@ router.delete("/:id", async (req, res) => {
     session.endSession();
   }
 });
-
-
-
 
 // UPDATE package
 // router.put("/:id", requireAdmin, async (req, res) => {

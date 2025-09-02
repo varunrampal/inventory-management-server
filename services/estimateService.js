@@ -330,13 +330,17 @@ console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in real
     const summed = Number(totalsByKey[key] || 0);
     const ordered = Number(it.quantity ?? Infinity);
 
+    console.log(`Ordered quantity for item ${key}:`, ordered);
+    console.log(`Summed quantity for item ${key}:`, summed);
+
     const nextFulfilled = Math.min(summed, ordered);
+    console.log(`Next fulfilled quantity for item ${key}:`, nextFulfilled);
     if (it.fulfilled !== nextFulfilled) {
       it.fulfilled = nextFulfilled;
       changed = true;
     }
   }
-
+console.log(changed ? 'Changes detected in fulfilled quantities.' : 'No changes in fulfilled quantities.');
   console.log(`Recomputed fulfilled quantities for estimate ${estimateId}:`, est.items);
 
   if (changed) est.markModified("items");
@@ -350,7 +354,7 @@ console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in real
 }
 
 export async function recomputeFulfilledForEstimate({ estimateId, realmId }, session) {
-  // Sum quantities per item from all *active* (non-deleted) packages for this estimate
+  // 1) Sum quantities from non-deleted packages
   const sums = await Package.aggregate([
     { $match: { estimateId, realmId, deletedAt: { $exists: false } } },
     { $unwind: "$items" },
@@ -359,16 +363,126 @@ export async function recomputeFulfilledForEstimate({ estimateId, realmId }, ses
 
   const sumMap = new Map(sums.map(s => [String(s._id), s.total]));
 
+  // 2) Load estimate (as a Mongoose doc)
   const estimate = await Estimate.findOne({ estimateId, realmId }).session(session);
   if (!estimate) throw new Error("Estimate not found");
 
-  estimate.items = estimate.items.map(it => {
+  // Optional: quick sanity check so you can clean data later if needed
+  const missingIdx = [];
+  estimate.items.forEach((it, idx) => {
+    if (it.itemId === undefined || it.itemId === null || it.itemId === "") missingIdx.push(idx);
+  });
+  if (missingIdx.length) {
+    console.warn(`Estimate ${estimateId} has items missing itemId at indexes:`, missingIdx);
+    // We still proceed; those lines will get fulfilled=0
+  }
+
+  // 3) Build a $set object with per-index fulfilled values
+  const setPaths = {};
+  estimate.items.forEach((it, idx) => {
     const summed = sumMap.get(String(it.itemId)) || 0;
-    // Clamp to not exceed ordered quantity if you want
-    const fulfilled = Math.min(summed, it.quantity ?? summed);
-    return { ...it.toObject?.() ?? it, fulfilled };
+    const nextFulfilled = Math.min(summed, it.quantity ?? summed);
+    setPaths[`items.${idx}.fulfilled`] = nextFulfilled;
   });
 
-  await estimate.save({ session });
-  return estimate;
+  // 4) Update only the needed fields to avoid full validation of required paths
+  await Estimate.updateOne(
+    { _id: estimate._id },
+    { $set: setPaths },
+    { session, runValidators: false } // <-- bypass full doc validation
+  );
+
+  // 5) Return the fresh doc
+  return Estimate.findById(estimate._id).session(session);
 }
+
+
+export async function recomputeEstimateFulfilledOnDelete({ estimateId, realmId }, session = null) {
+  // 1) Sum qty per item from *active* packages only
+  const pipeline = [
+    {
+      $match: {
+        estimateId,
+        realmId,
+        $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
+      },
+    },
+    { $project: { pairs: { $objectToArray: "$quantities" } } },
+    { $unwind: "$pairs" },
+    {
+      $group: {
+        _id: "$pairs.k",
+        total: {
+          $sum: {
+            $convert: { input: "$pairs.v", to: "double", onError: 0, onNull: 0 },
+          },
+        },
+      },
+    },
+  ];
+
+  const agg = Package.aggregate(pipeline);
+  if (session) agg.session(session);
+  const totals = await agg;
+
+  const totalsByKey = new Map(totals.map((t) => [String(t._id), Number(t.total || 0)]));
+
+  // 2) Load estimate in same session (if provided)
+  const findQ = Estimate.findOne({ estimateId, realmId });
+  if (session) findQ.session(session);
+  const est = await findQ;
+  if (!est) return null;
+
+  // 3) Build targeted $set to avoid re-validating whole array
+  const setPaths = {};
+  (est.items || []).forEach((it, idx) => {
+    if (!it?.itemId) return; // skip non-product rows; prevents "itemId required" errors
+    const key = String(it.itemId);
+    const summed = totalsByKey.get(key) ?? 0;
+    const ordered = Number(it.quantity ?? Infinity);
+    const next = Math.min(summed, ordered);
+    if (Number(it.fulfilled ?? 0) !== next) {
+      setPaths[`items.${idx}.fulfilled`] = next;
+    }
+  });
+
+  if (Object.keys(setPaths).length) {
+    await Estimate.updateOne(
+      { _id: est._id },
+      { $set: setPaths },
+      { session, runValidators: false } // update only fulfilled fields
+    );
+  }
+
+  // 4) Return fresh doc (still in session if provided)
+  const reloadQ = Estimate.findById(est._id);
+  if (session) reloadQ.session(session);
+  return reloadQ;
+}
+
+
+
+//working previously
+// export async function recomputeFulfilledForEstimate({ estimateId, realmId }, session) {
+//   // Sum quantities per item from all *active* (non-deleted) packages for this estimate
+//   const sums = await Package.aggregate([
+//     { $match: { estimateId, realmId, deletedAt: { $exists: false } } },
+//     { $unwind: "$items" },
+//     { $group: { _id: "$items.itemId", total: { $sum: "$items.quantity" } } },
+//   ]).session(session);
+
+//   const sumMap = new Map(sums.map(s => [String(s._id), s.total]));
+
+//   const estimate = await Estimate.findOne({ estimateId, realmId }).session(session);
+//   if (!estimate) throw new Error("Estimate not found");
+
+//   estimate.items = estimate.items.map(it => {
+//     const summed = sumMap.get(String(it.itemId)) || 0;
+//     // Clamp to not exceed ordered quantity if you want
+//     const fulfilled = Math.min(summed, it.quantity ?? summed);
+//     return { ...it.toObject?.() ?? it, fulfilled };
+//   });
+
+//   await estimate.save({ session });
+//   return estimate;
+// }
