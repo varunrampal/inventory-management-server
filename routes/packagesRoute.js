@@ -14,6 +14,205 @@ import { computeRemainingQuantities, computeRemainingQuantitiesOfEstimate,
 import { requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+const escapeRe = (s = "") => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// router.get("/packagelist", requireAdmin, async (req, res) => {
+//   try {
+//     const {
+//       search = "",
+//       from,
+//       to,
+//       page = 1,
+//       limit = 20,
+//       realmId,
+//     } = req.query;
+
+//     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+//     const perPage = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+//     const escapeRe = (s = "") => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+//     const filter = {};
+//     if (realmId) filter.realmId = realmId;
+
+//     // Shipping date range (inclusive)
+//     if (from || to) {
+//       filter.shipmentDate = {};
+//       if (from) filter.shipmentDate.$gte = new Date(from);
+//       if (to) {
+//         // make 'to' inclusive end-of-day
+//         const end = new Date(to);
+//         end.setHours(23, 59, 59, 999);
+//         filter.shipmentDate.$lte = end;
+//       }
+//     }
+
+//     // Single search box matches customerName OR estimateId
+//     if (search && search.trim()) {
+//       const term = search.trim();
+//       const safe = escapeRe(term);
+
+//       // If looks like a pure number, prefer a startsWith on estimateId
+//       const estimateStarts = /^[0-9]+$/.test(term)
+//          ? { estimateId: new RegExp("^" + safe, "i") }
+//         : { estimateId: new RegExp(safe, "i") };
+
+//       filter.$or = [
+//          { "snapshot.customerName": new RegExp(safe, "i") },
+//         estimateStarts,
+//       ];
+//     }
+
+//     // Sort: shipmentDate desc, then packageDate desc, then _id desc
+//     const sort = { shipmentDate: -1, packageDate: -1, _id: -1 };
+
+//     const [rows, total] = await Promise.all([
+//       Package.find(filter)
+//         .sort(sort)
+//         .skip((pageNum - 1) * perPage)
+//         .limit(perPage)
+//         .lean(),
+//       Package.countDocuments(filter),
+//     ]);
+
+//     res.json({
+//       data: rows,
+//       page: pageNum,
+//       limit: perPage,
+//       total,
+//       hasMore: pageNum * perPage < total,
+//     });
+//   } catch (err) {
+//     console.error("GET /admin/packages error", err);
+//     res.status(500).json({ error: "Failed to fetch packages." });
+//   }
+// });
+
+
+router.get("/packagelist", requireAdmin, async (req, res) => {
+  try {
+    const {
+      search = "",
+      from,
+      to,
+      page = 1,
+      limit = 20,
+      realmId,
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const perPage = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+
+    // Build the same match filter you already had
+    const match = {};
+    if (realmId) match.realmId = realmId;
+
+    if (from || to) {
+      match.shipmentDate = {};
+      if (from) match.shipmentDate.$gte = new Date(from);
+      if (to) {
+        const end = new Date(to);
+        end.setHours(23, 59, 59, 999);
+        match.shipmentDate.$lte = end;
+      }
+    }
+
+    if (search && search.trim()) {
+      const term = search.trim();
+      const safe = escapeRe(term);
+      const estMatch = /^[0-9]+$/.test(term)
+        ? { estimateId: new RegExp("^" + safe, "i") }
+        : { estimateId: new RegExp(safe, "i") };
+
+      match.$or = [
+        { "snapshot.customerName": new RegExp(safe, "i") },
+        estMatch,
+      ];
+    }
+
+    // Sort same as before
+    const sort = { shipmentDate: -1, packageDate: -1, _id: -1 };
+
+    // Collection name for Estimate (Mongoose pluralizes by default)
+    const estimateColl = mongoose.model("Estimate").collection.name; // likely "estimates"
+
+    const pipeline = [
+      { $match: match },
+      { $sort: sort },
+      {
+        $facet: {
+          data: [
+            { $skip: (pageNum - 1) * perPage },
+            { $limit: perPage },
+            // Lookup the related estimate by estimateId + realmId
+            {
+              $lookup: {
+                from: estimateColl,
+                let: { eId: "$estimateId", rId: "$realmId" },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ["$estimateId", "$$eId"] },
+                          { $eq: ["$realmId", "$$rId"] },
+                        ],
+                      },
+                    },
+                  },
+                  // Project only what you need
+                  {
+                    $project: {
+                      _id: 1,
+                      estimateId: 1,
+                      realmId: 1,
+                      customerName: 1,
+                      txnDate: 1,
+                      totalAmount: 1,
+                      items: 1,
+                      txnStatus: 1,
+                      // Project multiple possible address field names:
+                      billTo: 1,
+                      BillAddr: 1,
+                      billAddr: 1,
+                      shipTo: 1,
+                      ShipAddr: 1,
+                      shipAddr: 1,
+                    },
+                  },
+                ],
+                as: "estimate",
+              },
+            },
+            { $unwind: { path: "$estimate", preserveNullAndEmptyArrays: true } },
+          ],
+          meta: [{ $count: "total" }],
+        },
+      },
+      {
+        $project: {
+          data: 1,
+          total: { $ifNull: [{ $arrayElemAt: ["$meta.total", 0] }, 0] },
+        },
+      },
+    ];
+
+    const agg = await Package.aggregate(pipeline).allowDiskUse(true);
+    const rows = agg?.[0]?.data ?? [];
+    const total = agg?.[0]?.total ?? 0;
+
+    res.json({
+      data: rows, // each row now includes an `estimate` object
+      page: pageNum,
+      limit: perPage,
+      total,
+      hasMore: pageNum * perPage < total,
+    });
+  } catch (err) {
+    console.error("GET /packagelist error", err);
+    res.status(500).json({ error: "Failed to fetch packages." });
+  }
+});
+
 
 /**
  * Create a package for an estimate.
@@ -207,7 +406,12 @@ router.post('/create', async (req, res) => {
 
   try {
     // 1) Load fresh estimate (DO NOT use .lean() because we may mutate/save)
-    const estimate = await Estimate.findOne({ estimateId, realmId });
+    //const estimate = await Estimate.findOne({ estimateId, realmId });
+    const estimate = await Estimate
+  .findOne({ estimateId, realmId });
+  
+
+    console.log('========================Loaded estimate======================================:', estimate);
     if (!estimate) {
       return res.status(404).json({ success: false, message: 'Estimate not found' });
     }
@@ -314,7 +518,9 @@ router.post('/create', async (req, res) => {
       totals,
       snapshot: {
         customerName: estimate.customerName,
-        txnDate: estimate.txnDate
+        txnDate: estimate.txnDate,
+        billTo: estimate.raw?.BillAddr || null,
+        shipTo: estimate.raw?.ShipAddr || null,
       },
       quantities,
       status: 'Created' // later: 'Invoiced' after you create a QB invoice
@@ -520,6 +726,23 @@ router.delete("/:id", async (req, res) => {
     session.endSession();
   }
 });
+
+/**
+ * GET /admin/packages
+ * Query params:
+ *   search        - string; matches customerName (icontains) OR estimateId (startsWith / icontains)
+ *   from          - ISO date (inclusive); filters by shipmentDate
+ *   to            - ISO date (inclusive end-of-day)
+ *   page          - number (1-based)
+ *   limit         - number (default 20)
+ *   realmId       - string (if you silo data by realm)
+ *
+ * Always sorted by shipmentDate desc (fallback to packageDate desc, then _id desc).
+ */
+
+
+
+
 
 // UPDATE package
 // router.put("/:id", requireAdmin, async (req, res) => {
