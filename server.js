@@ -46,11 +46,29 @@ const {
   DEFAULT_SYNC_TYPE
 } = process.env;
 
-const app = express();
-app.use(cors({
-  origin: CLIENT_URL || 'http://localhost:5173',
 
-}));
+const ALLOWED_ORIGINS = [
+  process.env.CLIENT_URL,          // https://invtrack-admin.onrender.com
+  process.env.DEV_CLIENT_URL,      // http://localhost:5173
+].filter(Boolean);
+
+const corsOptions = {
+  origin(origin, cb) {
+    // Allow server-to-server or curl (no Origin)
+    if (!origin) return cb(null, true);
+
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true, // if you use cookies/authorization headers
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  maxAge: 86400, // cache preflight for a day
+};
+
+
+const app = express();
+app.use(cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json());
 
