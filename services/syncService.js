@@ -25,8 +25,8 @@ console.log(`🔄 Syncing ${companies.length} companies...`);
             continue;
         }
       await syncItemsFromQuickBooks(accessToken, realmId);
-      await syncInvoicesToDB(accessToken, realmId);
-      await syncEstimatesToDB(accessToken, realmId);
+      //await syncInvoicesToDB(accessToken, realmId);
+      //await syncEstimatesToDB(accessToken, realmId);
       console.log(`✅ Synced: ${realmId}`);
     } catch (err) {
       console.error(`❌ Failed to sync ${realmId}:`, err.message);
@@ -41,9 +41,9 @@ export async function syncCompany(accessToken, realmId) {
   } 
   console.log(`🔄 Syncing company: ${realmId}`);
   try {
-        await syncItemsFromQuickBooks(accessToken, realmId);
-    await syncInvoicesToDB(accessToken, realmId);
-    await syncEstimatesToDB(accessToken, realmId);
+        //await syncItemsFromQuickBooks(accessToken, realmId, { includeInactive: true, pageSize: 1000, minorVersion: 65 });
+    //await syncInvoicesToDB(accessToken, realmId);
+        await syncEstimatesToDB(accessToken, realmId);
     console.log(`✅ Synced: ${realmId}`);
   } catch (err) {
     console.error(`❌ Failed to sync ${realmId}:`, err.message);

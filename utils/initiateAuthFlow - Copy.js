@@ -1,15 +1,8 @@
 import crypto from 'crypto';
 import Token from '../models/token.js'; // Adjust the path as necessary
 
-//const CLIENT_ID = process.env.CLIENT_ID;
-//const REDIRECT_URI = process.env.REDIRECT_URI;
-const IS_PROD = process.env.QUICKBOOKS_ENV === 'production';
-
-export const CLIENT_ID = IS_PROD ? process.env.QB_PROD_CLIENT_ID : process.env.QB_SANDBOX_CLIENT_ID;
-export const REDIRECT_URI = IS_PROD
-  ? process.env.QB_PROD_REDIRECT_URI
-  : process.env.QB_SANDBOX_REDIRECT_URI;
-
+const CLIENT_ID = process.env.CLIENT_ID;
+const REDIRECT_URI = process.env.REDIRECT_URI;
 const SCOPE = 'com.intuit.quickbooks.accounting openid profile email phone address';
 const AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 

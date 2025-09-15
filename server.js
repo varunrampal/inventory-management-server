@@ -1,3 +1,4 @@
+// server.js (production-ready)
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -9,6 +10,8 @@ import bcrypt from 'bcrypt';
 import cookieParser from 'cookie-parser';
 import { ObjectId } from 'mongodb';
 import mongoose from 'mongoose';
+
+// Your project modules
 import { verifyWebhook } from './webhookHandler.js';
 import { syncInvoiceToInventory } from './syncInvoice.js';
 import { syncUpdatedInvoice } from './syncUpdatedInvoice.js';
@@ -18,425 +21,336 @@ import {
   getEstimateDetails,
   saveEstimateInLocalInventory,
   syncUpdatedEstimate,
-  reverseEstimateQuantities
 } from './services/estimateService.js';
-import { getItemDetailsFromQB, createOrUpdateItem, deleteItem } from './services/itemService.js';
-import { updateLocalInventory } from './services/inventoryService.js';
+import { getItemDetailsFromQB, createOrUpdateItem, deleteItem as deleteLocalItem } from './services/itemService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
-import Item from './models/item.js'; // Import your Item model
-import { requireAdmin } from './middleware/auth.js'; // For MongoDB ObjectId
+import Item from './models/item.js';
+import { requireAdmin } from './middleware/auth.js';
 import itemRoutes from './routes/items.js';
-import estimateRoutes from './routes/estimates.js'; // Import your estimates routes
-import adminRoutes from './routes/adminRoutes.js'; // Import your admin routes
-import authRoutes from './routes/authRoutes.js'; // Import your auth routes
+import estimateRoutes from './routes/estimates.js';
+import adminRoutes from './routes/adminRoutes.js';
+import authRoutes from './routes/authRoutes.js';
 import packageRoutes from './routes/packagesRoute.js';
-//import './cron.js'
-import db from './db.js'; // your MongoDB connection
+import qbRoutes from "./routes/qb.routes.js";
+import db from './db.js';
+
 dotenv.config();
 
-
+/* -------------------------- ENV + CONSTANTS -------------------------- */
 const {
-  CLIENT_ID,
-  CLIENT_SECRET,
-  REDIRECT_URI,
-  ENVIRONMENT,
+  QB_SANDBOX_CLIENT_ID,
+  QB_PROD_CLIENT_ID,
+  QB_SANDBOX_CLIENT_SECRET,
+  QB_PROD_CLIENT_SECRET,
+  QB_SANDBOX_REDIRECT_URI, // must match Intuit dashboard (production app)
+  QB_PROD_REDIRECT_URI,
+  QUICKBOOKS_ENV, // 'production' or 'sandbox'
   MONGO_URI,
-  CLIENT_URL,
-  DEFAULT_SYNC_TYPE
+  CLIENT_URL,           // e.g. https://invtrack-admin.onrender.com
+  DEV_CLIENT_URL,       // e.g. http://localhost:5173
+  JWT_SECRET = 'change-this-secret',
+  DEFAULT_SYNC_TYPE,    // 'invoices' or 'estimates' per your usage
+  PORT = 4000
+
 } = process.env;
 
+const IS_PROD = QUICKBOOKS_ENV === 'production';
 
-const ALLOWED_ORIGINS = [
-  process.env.CLIENT_URL,          // https://invtrack-admin.onrender.com
-  process.env.DEV_CLIENT_URL,      // http://localhost:5173
-].filter(Boolean);
+export const CLIENT_ID = IS_PROD ? QB_PROD_CLIENT_ID : QB_SANDBOX_CLIENT_ID;
+export const CLIENT_SECRET = IS_PROD ? QB_PROD_CLIENT_SECRET : QB_SANDBOX_CLIENT_SECRET;
+export const REDIRECT_URI = IS_PROD
+  ? QB_PROD_REDIRECT_URI
+  : QB_SANDBOX_REDIRECT_URI;  
+
+const ALLOWED_ORIGINS = [CLIENT_URL, DEV_CLIENT_URL].filter(Boolean);
 
 const corsOptions = {
   origin(origin, cb) {
-    // Allow server-to-server or curl (no Origin)
-    if (!origin) return cb(null, true);
-
+    if (!origin) return cb(null, true); // allow server-to-server / curl
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
-  credentials: true, // if you use cookies/authorization headers
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  maxAge: 86400, // cache preflight for a day
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400,
 };
 
+const QB_BASE_URL =
+  QUICKBOOKS_ENV === 'sandbox'
+    ? 'https://sandbox-quickbooks.api.intuit.com'
+    : 'https://quickbooks.api.intuit.com';
 
+/* ----------------------------- APP SETUP ----------------------------- */
 const app = express();
+app.set('trust proxy', 1); // if behind a proxy (Render/NGINX/etc.)
+
 app.use(cors(corsOptions));
 app.use(cookieParser());
-app.use(express.json());
+// Cap payload size to prevent abuse
+app.use(express.json({ limit: '1mb' }));
 
-// Resolve __dirname in ES Modules
+// __dirname in ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Serve the public directory
-app.use('/static', express.static(path.join(__dirname, 'public')));
+// Static (e.g., for logos, EULA html fallback if needed)
+//app.use('/static', express.static(path.join(__dirname, 'public'), { maxAge: IS_PROD ? '1d' : 0 }));
+app.use('/static', express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
 
+/* ------------------------------ DATABASE ----------------------------- */
+await db.connect(); // your db.js already handles client
+mongoose
+  .connect(MONGO_URI, { dbName: undefined })
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
 
-
-const connectedDb = await db.connect();
-
-
-
-const QB_BASE_URL = ENVIRONMENT === 'sandbox'
-  ? 'https://sandbox-quickbooks.api.intuit.com'
-  : 'https://quickbooks.api.intuit.com';
-
-let access_token = ''; // Store securely in DB in production
-let realmId = '';
-
-
-const SECRET = process.env.JWT_SECRET || 'change-this-secret';
-
-// Mock admin (in real life: store in DB)
+/* --------------------------- AUTH BOOTSTRAP -------------------------- */
+// For demo/admin login — keep minimal in production
 const adminUser = {
   email: 'admin@example.com',
-  passwordHash: await bcrypt.hash('admin123', 10) // hash this once
+  passwordHash: await bcrypt.hash('admin123', 10),
 };
 
-// app.use(cors({
-
-//   origin: 'https://inventory-management-frontend-d8oi.onrender.com',//process.env.CLIENT_URL || 'http://localhost:5173',
-//   credentials: true, // Allow cookies to be sent
-
-// }));
-
-
+/* -------------------------------- ROUTES ----------------------------- */
+// Your existing feature routes
+app.use("/admin/qb", qbRoutes);
 app.use('/admin/items', itemRoutes);
 app.use('/admin/estimates', estimateRoutes);
 app.use('/admin/packages', packageRoutes);
 app.use('/admin/sync', adminRoutes);
-app.use('/auth', authRoutes); // Serve static files for auth
+app.use('/auth', authRoutes);
 
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
-
-
-
-// Admin login
-// app.post('/admin/login', async (req, res) => {
-//   const { email, password } = req.body;
-//   if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
-//     //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
-//     const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
-//     console.log('Environment:', process.env.NODE_ENV);
-//     res.cookie('token', token, 
-//       { httpOnly: true,
-//         sameSite: 'lax',
-//         secure: true,//process.env.NODE_ENV === 'production',
-//         maxAge: 24 * 60 * 60 * 1000 // 1 day
-//        }
-
-//     );
-//     res.json({ success: true });
-//   } else {
-//     res.status(401).json({ error: 'Invalid credentials' });
-//   }
-// });
-
+/* -------- Admin login (Bearer token response; front-end stores it) --- */
 app.post('/admin/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (email === adminUser.email && await bcrypt.compare(password, adminUser.passwordHash)) {
-    //const token = jwt.sign({ email }, SECRET, { expiresIn: '2h' });
-    const token = jwt.sign({ role: 'admin' }, SECRET, { expiresIn: '2h' });
-
-    return res.status(200).json({ token });
-
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
+  try {
+    const { email, password } = req.body || {};
+    if (email === adminUser.email && (await bcrypt.compare(password, adminUser.passwordHash))) {
+      const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '2h' });
+      return res.status(200).json({ token });
+    }
+    return res.status(401).json({ error: 'Invalid credentials' });
+  } catch (e) {
+    console.error('Login error:', e);
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
-
-// Middleware to check admin authentication
-// app.get('/admin/auth-check', (req, res) => {
-//   const token = req.cookies.token;
-//    console.log('Cookies received:', req.cookies);  
-//   console.log('Token:', token);
-//   if (!token) return res.status(401).send();
-
-//   try {
-
-//     jwt.verify(token, process.env.JWT_SECRET);
-//     return res.status(200).send();
-//   } catch {
-//     return res.status(401).send();
-//   }
-// });
+/* ------------------------- Admin auth check (JWT) -------------------- */
 app.get('/admin/auth-check', (req, res) => {
   const authHeader = req.headers.authorization;
-  console.log('Authorization header:', authHeader);
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).send('No token');
-  }
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).send('No token');
   const token = authHeader.split(' ')[1];
-  //console.log('Token:', token);
   try {
-    jwt.verify(token, SECRET);
-    res.sendStatus(200);
+    jwt.verify(token, JWT_SECRET);
+    return res.sendStatus(200);
   } catch {
-    res.status(401).send('Invalid token');
+    return res.status(401).send('Invalid token');
   }
 });
 
-//Admin Logout
-app.post('/admin/logout', (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: true
-  });
-
-  return res.status(200).json({ message: 'Logged out' });
-});
-
-
-//Get low stock items
-// This route fetches items with quantity less than 100
+/* -------------------------- Inventory endpoints ---------------------- */
+// Low stock (uses Mongoose model)
 app.get('/admin/inventory/lowstock/:realmId', requireAdmin, async (req, res) => {
-  const { realmId } = req.params;
-  const { search = '', page = 1, limit = 10 } = req.query;
-  const skip = (parseInt(page) - 1) * parseInt(limit);
-  const query = search
-    ? { name: { $regex: new RegExp(search, 'i') }, realmId, quantity: { $lt: 100 } }
-    : {};
-
   try {
+    const { realmId } = req.params;
+    const { search = '', page = 1, limit = 10 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const nameQuery = search ? { name: { $regex: new RegExp(search, 'i') } } : {};
+
+    const findQuery = { ...nameQuery, realmId, quantity: { $lt: 100 } };
 
     const [items, total] = await Promise.all([
-      Item.find({ ...query, quantity: { $lt: 100 } })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ updatedAt: -1 }),
-      Item.countDocuments({ ...query, quantity: { $lt: 100 } })
+      Item.find(findQuery).skip(skip).limit(parseInt(limit)).sort({ updatedAt: -1 }),
+      Item.countDocuments(findQuery),
     ]);
 
-    res.json({
-      items,
-      total,
-      page: parseInt(page),
-      limit: parseInt(limit)
-    });
+    res.json({ items, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
-    console.error('Item fetch error:', err);
+    console.error('Low stock fetch error:', err);
     res.status(500).json({ error: 'Server error' });
   }
-
-
-
-  //   const items = await connectedDb.collection('items').find({ realmId, quantity: { $lt: 100 } }).toArray();
-  //   console.log('Fetched low stock items:', items);
-  //   res.json(items);
-  // } catch (err) {
-  //   res.status(500).json({ error: 'Failed to fetch inventory' });
-  // }
 });
 
-// Admin Routes to view and edit inventory
+// Full inventory via raw driver (kept for compatibility)
 app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
-  const { realmId } = req.params;
   try {
-
-    const items = await connectedDb.collection('items').find({ realmId }).toArray();
-    console.log('Fetched items:', items);
+    const { realmId } = req.params;
+    const items = await db.connect().then(conn => conn.collection('items').find({ realmId }).toArray());
     res.json(items);
   } catch (err) {
+    console.error('Inventory fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch inventory' });
   }
 });
 
 // Update an item
 app.put('/admin/inventory/:id/:realmId', requireAdmin, async (req, res) => {
-  const { id, realmId } = req.params;
-  const update = req.body;
-  console.log('Updating item:', id, 'in realm:', realmId, 'with data:', update);
   try {
-    update.updatedAt = new Date();
-    const result = await connectedDb.collection('items').updateOne(
-      { _id: new ObjectId(id), realmId },
-      { $set: update }
+    const { id, realmId } = req.params;
+    const update = { ...req.body, updatedAt: new Date() };
+    const result = await db.connect().then(conn =>
+      conn.collection('items').updateOne({ _id: new ObjectId(id), realmId }, { $set: update })
     );
     res.json({ success: result.modifiedCount > 0 });
   } catch (err) {
-    console.log(err);
+    console.error('Item update error:', err);
     res.status(500).json({ error: 'Failed to update item' });
   }
 });
 
-
-
+/* ------------------------- QuickBooks OAuth -------------------------- */
+// Step 1: redirect user to Intuit consent
 app.get('/auth/quickbooks', (req, res) => {
   const scope = [
     'com.intuit.quickbooks.accounting',
-    'openid',
-    'profile',
-    'email'
+    // Include only what you actually need:
+    // 'openid', 'profile', 'email'
   ].join(' ');
 
-  const url = `https://appcenter.intuit.com/connect/oauth2?client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${encodeURIComponent(scope)}&state=12345`;
+  const state = `invtrack-${Math.random().toString(36).slice(2)}`;
+  const url =
+    `https://appcenter.intuit.com/connect/oauth2?client_id=${CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code&scope=${encodeURIComponent(scope)}` +
+    `&state=${encodeURIComponent(state)}`;
 
   res.redirect(url);
 });
 
+// Step 2: callback (store tokens in DB)
 app.get('/auth/callback', async (req, res) => {
-  const { code, realmId: rId } = req.query;
-  realmId = rId;
-
-  const tokenRes = await axios.post(
-    'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
-    new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: REDIRECT_URI
-    }),
-    {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')}`,
-      },
-    }
-  );
-
-  access_token = tokenRes.data.access_token;
-
-  //console.log(`Access Token: ${access_token}`);
-
-  await saveTokenToMongo(realmId, tokenRes.data);
-
-  res.send('QuickBooks connected! You can now access /invoices.');
-});
-
-app.get('/invoices', async (req, res) => {
-  if (!access_token || !realmId) return res.status(401).send('Not authenticated');
-
   try {
-    const query = 'SELECT * FROM Invoice MAXRESULTS 50';
-    const response = await axios.get(
-      `${QB_BASE_URL}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`,
+    const { code, realmId } = req.query;
+    if (!code || !realmId) return res.status(400).send('Missing code or realmId');
+
+    const tokenRes = await axios.post(
+      'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
+      new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI }),
       {
         headers: {
-          Authorization: `Bearer ${access_token}`,
-          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')}`,
         },
       }
     );
+
+    await saveTokenToMongo(String(realmId), tokenRes.data);
+    // Redirect to your admin UI page that can read ?realmId
+     const redirectTo = IS_PROD ? CLIENT_URL.replace(/\/$/, '') : DEV_CLIENT_URL.replace(/\/$/, '');
+    //const redirectTo = (CLIENT_URL || DEV_CLIENT_URL || '/').replace(/\/$/, '');
+    console.log(`${redirectTo}/qb-connected?realmId=${encodeURIComponent(String(realmId))}`);
+    res.redirect(`${redirectTo}/qb-connected?realmId=${encodeURIComponent(String(realmId))}`);
+  } catch (err) {
+    console.error('QuickBooks callback error:', err?.response?.data || err.message);
+    res.status(400).send('QuickBooks authorization failed.');
+  }
+});
+
+/* -------------------- Example: Read invoices (safe) ------------------ */
+// Always get a fresh token from DB; do not use process memory
+app.get('/invoices', async (req, res) => {
+  try {
+    const { realmId } = req.query;
+    if (!realmId) return res.status(400).send('realmId required');
+
+    const access_token = await getValidAccessToken(String(realmId));
+    const query = 'SELECT * FROM Invoice MAXRESULTS 50';
+
+    const response = await axios.get(
+      `${QB_BASE_URL}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`,
+      { headers: { Authorization: `Bearer ${access_token}`, Accept: 'application/json' } }
+    );
+
     res.json(response.data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Fetch invoices error:', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to fetch invoices' });
   }
 });
 
-// This webhook is called when an invoice is created, updated or deleted in QuickBooks
-// It will sync the invoice to the local inventory
+/* -------------------- QuickBooks Webhooks (single) ------------------- */
+/**
+ * Intuit will POST here. Keep it quick:
+ * - verify signature
+ * - ack 200 immediately
+ * - process events asynchronously
+ */
 app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) => {
-  const events = req.body.eventNotifications;
+  res.sendStatus(200); // respond fast
 
-  console.log('Call 1')
-  events.forEach(event => {
-    const realmId = event.realmId;
-    event.dataChangeEvent.entities.forEach(async entity => {
-      try {
-        const accessToken = await getValidAccessToken(realmId);
-        //console.log('Access Token:', accessToken);
-        // Handle different entity types
-        if (entity.name === 'Invoice' && process.env.DEFAULT_SYNC_TYPE === 'invoices') {
-          if (entity.operation === 'Create') {
-            console.log('New Invoice created:', entity.id);
-            // Fetch invoice details + sync inventory
-            await syncInvoiceToInventory(accessToken, realmId, entity.id);
-            const invoice = await getInvoiceDetails(accessToken, realmId, entity.id);
-            // Save invoice in local inventory
-            await saveInvoiceInLocalInventory(invoice, realmId);
-          }
-          else if (entity.operation === 'Update') {
-            console.log('Invoice updated:', entity.id);
-            await syncUpdatedInvoice(accessToken, realmId, entity.id);
-          } else if (entity.operation === 'Delete') {
-            console.log('Invoice deleted:', entity.id);
-            await reverseInvoiceQuantities(entity.id);
-          }
-        }
-        // Handle estimates and items similarly
-        if (entity.name === 'Estimate' && process.env.DEFAULT_SYNC_TYPE === 'estimates') {
-          if (entity.operation === 'Create') {
-            console.log('New Estimate created:', entity.id);
-            // Fetch estimate details + sync inventory
-            await syncEstimateToInventory(accessToken, realmId, entity.id);
-            const estimate = await getEstimateDetails(accessToken, realmId, entity.id);
-            // Save estimate in local inventory
-            await saveEstimateInLocalInventory(estimate, realmId);
-          } else if (entity.operation === 'Update') {
-            console.log('Estimate updated:', entity.id);
-            // Sync updated estimate to inventory
-            await syncUpdatedEstimate(accessToken, realmId, entity.id);
-          } else if (entity.operation === 'Delete') {
-            console.log('Estimate deleted:', entity.id);
-            // Reverse quantities for deleted estimate
-            await deleteItem(entity.id);
-          }
+  try {
+    const notifications = req.body?.eventNotifications || [];
+    for (const event of notifications) {
+      const realmId = event.realmId;
 
-        }
-        // Handle items
-        if (entity.name === 'Item') {
-          if (entity.operation === 'Create' || entity.operation === 'Update') {
-            console.log('New Item created/Updated:', entity.id);
-            // Handle new item creation logic here
-            const itemDetails = await getItemDetailsFromQB(accessToken, realmId, entity.id);
-            if (!itemDetails) {
-              console.warn(`⚠️ No item found for ID ${entity.id}`);
-              return null;
+      for (const entity of event.dataChangeEvent?.entities || []) {
+        try {
+          const accessToken = await getValidAccessToken(realmId);
+
+          // INVOICES
+          if (entity.name === 'Invoice' && DEFAULT_SYNC_TYPE === 'invoices') {
+            if (entity.operation === 'Create') {
+              await syncInvoiceToInventory(accessToken, realmId, entity.id);
+              const invoice = await getInvoiceDetails(accessToken, realmId, entity.id);
+              await saveInvoiceInLocalInventory(invoice, realmId);
+            } else if (entity.operation === 'Update') {
+              await syncUpdatedInvoice(accessToken, realmId, entity.id);
+            } else if (entity.operation === 'Delete') {
+              await reverseInvoiceQuantities(entity.id);
             }
-            await createOrUpdateItem(itemDetails, realmId);
-
-          } else if (entity.operation === 'Delete') {
-
-            console.log('Item deleted:', entity.id);
-            // Handle item deletion logic here
-            await deleteItemByQuickBooksId(entity.id);
           }
+
+          // ESTIMATES
+          if (entity.name === 'Estimate' && DEFAULT_SYNC_TYPE === 'estimates') {
+            if (entity.operation === 'Create') {
+              await syncEstimateToInventory(accessToken, realmId, entity.id);
+              const estimate = await getEstimateDetails(accessToken, realmId, entity.id);
+              await saveEstimateInLocalInventory(estimate, realmId);
+            } else if (entity.operation === 'Update') {
+              await syncUpdatedEstimate(accessToken, realmId, entity.id);
+            } else if (entity.operation === 'Delete') {
+              // If you want to reverse estimate quantities here, add your handler
+              // await reverseEstimateQuantities(entity.id);
+              // Or delete local mirror if required:
+              // await deleteLocalEstimate(entity.id)
+            }
+          }
+
+          // ITEMS
+          if (entity.name === 'Item') {
+            if (entity.operation === 'Create' || entity.operation === 'Update') {
+              const itemDetails = await getItemDetailsFromQB(accessToken, realmId, entity.id);
+              if (itemDetails) {
+                await createOrUpdateItem(itemDetails, realmId);
+              } else {
+                console.warn(`Item ${entity.id} not found on QB`);
+              }
+            } else if (entity.operation === 'Delete') {
+              await deleteLocalItem(entity.id);
+            }
+          }
+        } catch (innerErr) {
+          console.error(`Webhook entity ${entity?.name} (${entity?.id}) failed:`, innerErr?.message);
         }
-      } catch (err) {
-        console.error(`❌ Failed to sync ${entity.id}:`, err.message);
-      }
-    });
-  });
-
-  res.status(200).send();
-});
-
-
-app.post('/quickbooks/webhook', express.json(), async (req, res) => {
-  res.sendStatus(200); // Respond fast to QuickBooks
-  console.log('Call 2')
-  const events = req.body.eventNotifications;
-
-  for (const event of events) {
-    const realmId = event.realmId;
-
-    for (const entity of event.dataChangeEvent.entities) {
-      if (entity.name === 'Invoice' && entity.operation === 'Create') {
-        const invoiceId = entity.id;
-
-        await syncInvoiceToInventory(
-          access_token,
-          realmId,
-          invoiceId
-        );
       }
     }
+  } catch (err) {
+    console.error('Webhook processing error:', err?.message);
   }
 });
 
+/* ----------------------------- 404 + ERRORS -------------------------- */
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
-app.listen(4000, () => console.log('Server running on http://localhost:4000'));
+// Basic error handler (avoid leaking stack in prod)
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Server error' });
+});
+
+/* ------------------------------ START ------------------------------- */
+app.listen(PORT, () => {
+  console.log(`🚀 Server up on http://localhost:${PORT} (env=${QUICKBOOKS_ENV}, QB=${QUICKBOOKS_ENV}), URI=${REDIRECT_URI}`);
+});

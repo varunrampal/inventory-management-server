@@ -1,162 +1,269 @@
 import axios from 'axios';
 import Estimate from '../models/estimate.js'; // Assuming you have an Estimate model defined
 import Package from '../models/package.js';
+import { qbUrl } from '../integrations/quickbooks.js';
 import { updateItemByQuickBooksId } from '../item.js'; // Adjust the import path as necessary
 import { updateLocalInventory } from './inventoryService.js';
 import Item from '../models/item.js'; // Assuming you have an Item model defined
 import db from '../db.js'; // your MongoDB connection
 const connectedDb = await db.connect();
 
+
+const QB_BASE_URL =
+  process.env.QUICKBOOKS_ENV === "production"
+    ? "https://quickbooks.api.intuit.com"
+    : "https://sandbox-quickbooks.api.intuit.com";
+
+const MINOR = "65";           // current safe minor version
+const PAGE_SIZE = 1000;       // QBO max is 1000 per page
+
 // This function syncs all estimates from QuickBooks to the local database
 // It fetches all estimates and updates or creates them in the local inventory
-export async function syncEstimatesToDB(accessToken, realmId) {
-    const endpoint = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query?query=SELECT * FROM Estimate&minorversion=65`;
+// export async function syncEstimatesToDB(accessToken, realmId) {
+//     const endpoint = `${QB_BASE_URL}/v3/company/${realmId}/query?query=SELECT * FROM Estimate&minorversion=65`;
 
+//     try {
+//         const response = await axios.get(endpoint, {
+//             headers: {
+//                 Authorization: `Bearer ${accessToken}`,
+//                 Accept: 'application/json'
+//             }
+//         });
+
+//         console.log('Estimate sync started');
+//         const estimates = response.data.QueryResponse.Estimate || [];
+//         if (!Array.isArray(estimates)) {
+//             console.warn('⚠️ No estimates found or response is not an array');
+//             return; // Stop processing if no valid estimates
+//         }
+//         console.log(`✅ Syncing ${estimates.length} estimates`);
+//         // Save each estimate to the local database
+//         for (const estimate of estimates) {
+//             const items = (estimate.Line || [])
+//                 .filter(line => line.SalesItemLineDetail)
+//                 .map(line => {
+//                     const itemRef = line.SalesItemLineDetail.ItemRef;
+//                     const qty = line.SalesItemLineDetail.Qty || line.Qty || 1;
+//                     return {
+//                         itemId: itemRef?.value,
+//                         name: itemRef?.name,
+//                         quantity: qty,
+//                         rate: line.Amount / qty,
+//                         amount: line.Amount
+//                     };
+//                 });
+
+//             const status = estimate.status || 'Active'; // Optional field fallback
+
+//             await Estimate.findOneAndUpdate(
+//                 { estimateId: estimate.Id, realmId: realmId },
+//                 {
+//                     $set: {
+//                         customerName: estimate.CustomerRef?.name,
+//                         txnDate: estimate.TxnDate,
+//                         totalAmount: estimate.TotalAmt,
+//                         status,
+//                         items,
+//                         raw: estimate
+//                     }
+//                 },
+//                 { upsert: true, new: true }
+//             );
+//         }
+
+//         console.log(`✅ Synced ${estimates.length} estimates`);
+//     } catch (err) {
+//         console.error('❌ Error syncing estimates:', err.response?.data || err.message);
+//         throw err;
+//     }
+// }
+
+export async function syncEstimatesToDB(accessToken, realmId) {
+  console.log("Estimate sync started");
+
+  let start = 1;
+  let totalSynced = 0;
+
+  while (true) {
+    // SQL with pagination
+    const sql = `SELECT * FROM Estimate STARTPOSITION ${start} MAXRESULTS ${PAGE_SIZE}`;
+    const url = qbUrl(realmId, "query", { query: sql, minorversion: MINOR });
+console.log('URL:', url);
+    let data;
     try {
-        const response = await axios.get(endpoint, {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: 'application/json'
-            }
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+           Accept: "application/json",
+           "Content-Type": "application/text; charset=utf-8",
+        },
+      });
+      data = res.data;
+    } catch (err) {
+      // Helpful logging in prod
+      const data = err?.response?.data;
+      if (data?.fault?.error?.length) {
+        const e0 = data.fault.error[0];
+        console.error("❌ QBO Fault:", {
+          code: e0?.code,
+          message: e0?.message,
+          detail: e0?.detail,
+          type: data?.fault?.type,
+        });
+      } else {
+        console.error("❌ Estimate page fetch error:", data || err.message);
+      }
+      throw err;
+    }
+
+    const estimates = data?.QueryResponse?.Estimate || [];
+    if (!Array.isArray(estimates) || estimates.length === 0) break;
+
+    // Upsert each estimate
+    for (const est of estimates) {
+      const lines = Array.isArray(est.Line) ? est.Line : [];
+      const items = lines
+        .filter(l => l?.SalesItemLineDetail)
+        .map(l => {
+          const qtyRaw =
+            l?.SalesItemLineDetail?.Qty ??
+            l?.Qty ??
+            1;
+          const qty = Number(qtyRaw) > 0 ? Number(qtyRaw) : 1;
+          const amount = Number(l?.Amount) || 0;
+          const itemRef = l?.SalesItemLineDetail?.ItemRef || {};
+          return {
+            itemId: itemRef.value,
+            name: itemRef.name,
+            quantity: qty,
+            rate: qty ? amount / qty : amount, // guard divide-by-zero
+            amount,
+          };
         });
 
-        const estimates = response.data.QueryResponse.Estimate || [];
-        if (!Array.isArray(estimates)) {
-            console.warn('⚠️ No estimates found or response is not an array');
-            return; // Stop processing if no valid estimates
-        }
-        console.log(`✅ Syncing ${estimates.length} estimates`);
-        // Save each estimate to the local database
-        for (const estimate of estimates) {
-            const items = (estimate.Line || [])
-                .filter(line => line.SalesItemLineDetail)
-                .map(line => {
-                    const itemRef = line.SalesItemLineDetail.ItemRef;
-                    const qty = line.SalesItemLineDetail.Qty || line.Qty || 1;
-                    return {
-                        itemId: itemRef?.value,
-                        name: itemRef?.name,
-                        quantity: qty,
-                        rate: line.Amount / qty,
-                        amount: line.Amount
-                    };
-                });
+      // Map QBO status to your schema enum (defaults to Pending)
+      // QBO field is TxnStatus: e.g., "Accepted", "Closed", "Pending", "Rejected"
+      const txnStatus = est?.TxnStatus || "Pending";
 
-            const status = estimate.status || 'Active'; // Optional field fallback
+      await Estimate.findOneAndUpdate(
+        { estimateId: String(est.Id), realmId: String(realmId) },
+        {
+          $set: {
+            customerName: est?.CustomerRef?.name || "",
+            txnDate: est?.TxnDate || null,
+            totalAmount: Number(est?.TotalAmt) || 0,
+            txnStatus,              // <— matches your schema
+            items,
+            raw: est,
+          },
+          $setOnInsert: {
+            estimateId: String(est.Id),
+            realmId: String(realmId),
+          },
+        },
+        { upsert: true, new: false }
+      );
 
-            await Estimate.findOneAndUpdate(
-                { estimateId: estimate.Id, realmId: realmId },
-                {
-                    $set: {
-                        customerName: estimate.CustomerRef?.name,
-                        txnDate: estimate.TxnDate,
-                        totalAmount: estimate.TotalAmt,
-                        status,
-                        items,
-                        raw: estimate
-                    }
-                },
-                { upsert: true, new: true }
-            );
-        }
-
-        console.log(`✅ Synced ${estimates.length} estimates`);
-    } catch (err) {
-        console.error('❌ Error syncing estimates:', err.response?.data || err.message);
-        throw err;
+      totalSynced++;
     }
-}
 
+    // next page
+    if (estimates.length < PAGE_SIZE) break;
+    start += PAGE_SIZE;
+  }
+
+  console.log(`✅ Synced ${totalSynced} estimates`);
+}
 // This function syncs a specific estimate to the local inventory
 // It fetches the estimate details from QuickBooks and updates the local inventory
 export const syncEstimateToInventory = async (accessToken, realmId, estimateId) => {
-    try {
-        const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/estimate/${estimateId}`;
+  try {
+    const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}`;
 
-        const res = await axios.get(url, {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: 'application/json'
-            }
-        });
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
 
-        const estimate = res.data.Estimate;
-        console.log(estimate)
+    const estimate = res.data.Estimate;
+    console.log(estimate)
 
-        for (const line of estimate.Line) {
-            if (line.SalesItemLineDetail) {
-                const itemRef = line.SalesItemLineDetail.ItemRef;
-                const qty = line.SalesItemLineDetail.Qty;
-                const itemId = itemRef.value;
-                const itemName = itemRef.name;
+    for (const line of estimate.Line) {
+      if (line.SalesItemLineDetail) {
+        const itemRef = line.SalesItemLineDetail.ItemRef;
+        const qty = line.SalesItemLineDetail.Qty;
+        const itemId = itemRef.value;
+        const itemName = itemRef.name;
 
-                console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
+        console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
 
-                await updateLocalInventory(itemId, -qty);
+        await updateLocalInventory(itemId, -qty);
 
 
-                // You could reserve stock here or just log it
-                // await updateItemByQuickBooksId(db, itemId, {
-                //   lastEstimatedQty: qty,
-                //   lastEstimatedAt: new Date()
-                // });
-            }
-        }
-
-        console.log(`✅ Estimate ${estimateId} processed`);
-    } catch (err) {
-        console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
+        // You could reserve stock here or just log it
+        // await updateItemByQuickBooksId(db, itemId, {
+        //   lastEstimatedQty: qty,
+        //   lastEstimatedAt: new Date()
+        // });
+      }
     }
+
+    console.log(`✅ Estimate ${estimateId} processed`);
+  } catch (err) {
+    console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
+  }
 };
 
 // This function fetches the details of a specific estimate from QuickBooks
 // It returns the estimate object containing all relevant information
 export const getEstimateDetails = async (accessToken, realmId, estimateId) => {
 
-    console.log(`Fetching Estimate ${estimateId} for Realm ${realmId} and Access Token ${accessToken}`);
-    const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/estimate/${estimateId}`;
+  console.log(`Fetching Estimate ${estimateId} for Realm ${realmId} and Access Token ${accessToken}`);
+  const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}`;
 
-    const res = await axios.get(url, {
-        headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/json',
-        },
-    });
+  const res = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+  });
 
-    return res.data.Estimate;
+  return res.data.Estimate;
 };
 
 export const saveEstimateInLocalInventory = async (estimate, realmId) => {
-    console.log('estimate:', estimate);
+  console.log('estimate:', estimate);
 
-    console.log('estimate.Line:', estimate.Line);
-    await Estimate.create({
-        estimateId: estimate.Id,
-        customerName: estimate.CustomerRef?.name || 'Unknown',
-        txnDate: estimate.TxnDate,
-        totalAmount: estimate.TotalAmt,
-        realmId,
-        items: Array.isArray(estimate.Line)
-            ? estimate.Line
-                .filter(line => line.SalesItemLineDetail)
-                .map(line => ({
-                    name: line.SalesItemLineDetail.ItemRef?.name || 'Unnamed',
-                    itemId: line.SalesItemLineDetail.ItemRef?.value,
-                    quantity: line.SalesItemLineDetail.Qty || 0,
-                    rate: line.SalesItemLineDetail.UnitPrice || 0,
-                    amount: line.SalesItemLineDetail.Amount || 0
-                }))
-            : [],
-        raw: estimate
-    });
+  console.log('estimate.Line:', estimate.Line);
+  await Estimate.create({
+    estimateId: estimate.Id,
+    customerName: estimate.CustomerRef?.name || 'Unknown',
+    txnDate: estimate.TxnDate,
+    totalAmount: estimate.TotalAmt,
+    realmId,
+    items: Array.isArray(estimate.Line)
+      ? estimate.Line
+        .filter(line => line.SalesItemLineDetail)
+        .map(line => ({
+          name: line.SalesItemLineDetail.ItemRef?.name || 'Unnamed',
+          itemId: line.SalesItemLineDetail.ItemRef?.value,
+          quantity: line.SalesItemLineDetail.Qty || 0,
+          rate: line.SalesItemLineDetail.UnitPrice || 0,
+          amount: line.SalesItemLineDetail.Amount || 0
+        }))
+      : [],
+    raw: estimate
+  });
 
 
-    console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}`);
+  console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}`);
 };
 
 
 export async function syncUpdatedEstimate(token, realmId, estimateId) {
-  const res = await fetch(`https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/estimate/${estimateId}`, {
+  const res = await fetch(`${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json'
@@ -169,12 +276,12 @@ export async function syncUpdatedEstimate(token, realmId, estimateId) {
   }
 
   //console.log(`✅ Fetched updated estimate ${JSON.stringify(await res.json())} from QuickBooks`);
-    // Parse the response as JSON
+  // Parse the response as JSON
   const estimate = (await res.json()).Estimate;
 
   //console.log( `Updating estimate ${estimate} in local inventory...`);
 
-    // Lookup old estimate from local DB
+  // Lookup old estimate from local DB
   const oldEstimate = await Estimate.findOne({ estimateId, realmId });
 
   //console.log(`estimate in local db: ${JSON.stringify(oldEstimate)}`);
@@ -184,7 +291,7 @@ export async function syncUpdatedEstimate(token, realmId, estimateId) {
     const qty = Number(item.quantity) || 0;
     console.log(`Reversing quantity for item: ${item.name}, quantity: ${qty}`);
     // Update the item quantity in the local inventory
-    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: qty} });
+    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: qty } });
   }
 
   //console.log(`Estimate Line from quickbooks: ${JSON.stringify(estimate.Line)}`);
@@ -197,28 +304,28 @@ export async function syncUpdatedEstimate(token, realmId, estimateId) {
   console.log(`New items to update: ${JSON.stringify(newItems)}`);
 
   for (const item of newItems) {
-     await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: -item.quantity } });
+    await connectedDb.collection('items').updateOne({ name: item.name, realmId }, { $inc: { quantity: -item.quantity } });
   }
 
   // Update the estimate in the local database
-await Estimate.updateOne(
-  { estimateId, realmId }, 
-  { 
-    $set: {
-      items: newItems,
-      txnStatus: estimate.TxnStatus,
-      'raw.TxnStatus': estimate.TxnStatus,
-      totalAmount: estimate.TotalAmt,
-      updatedAt: new Date()
+  await Estimate.updateOne(
+    { estimateId, realmId },
+    {
+      $set: {
+        items: newItems,
+        txnStatus: estimate.TxnStatus,
+        'raw.TxnStatus': estimate.TxnStatus,
+        totalAmount: estimate.TotalAmt,
+        updatedAt: new Date()
+      }
     }
-  }
-);
+  );
 }
 
 // This function reverses the quantities of items in an invoice
 // It fetches the estimate from the local database and updates the item quantities accordingly
 export async function reverseEstimateQuantities(estimateId) {
-  const estimate = await  connectedDb.collection('estimates').findOne({ estimateId });
+  const estimate = await connectedDb.collection('estimates').findOne({ estimateId });
 
   if (estimate) {
     for (const item of estimate.items) {
@@ -248,7 +355,7 @@ export function computeRemainingQuantitiesOfEstimate(estimateDoc) {
 
   const items = Array.isArray(estimateDoc?.items) ? estimateDoc.items : [];
   for (const line of items) {
-    const ordered   = Number(line?.quantity ?? 0);
+    const ordered = Number(line?.quantity ?? 0);
     const fulfilled = Number(line?.fulfilled ?? 0);
     const remaining = Math.max(0, ordered - fulfilled);
 
@@ -316,7 +423,7 @@ export async function recomputeEstimateFulfilled({ estimateId, realmId }) {
     { $group: { _id: "$pairs.k", total: { $sum: { $toDouble: "$pairs.v" } } } },
   ]);
   const totalsByKey = Object.fromEntries(totals.map(t => [String(t._id), t.total]));
-console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in realm ${realmId}`);
+  console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in realm ${realmId}`);
   const est = await Estimate.findOne({ estimateId, realmId });
   if (!est) return;
 
@@ -340,7 +447,7 @@ console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in real
       changed = true;
     }
   }
-console.log(changed ? 'Changes detected in fulfilled quantities.' : 'No changes in fulfilled quantities.');
+  console.log(changed ? 'Changes detected in fulfilled quantities.' : 'No changes in fulfilled quantities.');
   console.log(`Recomputed fulfilled quantities for estimate ${estimateId}:`, est.items);
 
   if (changed) est.markModified("items");

@@ -296,6 +296,34 @@ router.get('/details/:estimateId/:realmId', requireAdmin, async (req, res) => {
   }
 });
 
+router.get('/details/by-doc/:docNumber/:realmId', requireAdmin, async (req, res) => {
+  const { docNumber, realmId } = req.params;
+  console.log('Fetching estimate details for docNumber:', docNumber, 'and realmId:', realmId);
+
+  try {
+    //  const estimate = await Estimate.find({
+    //    estimateId,
+    //    realmId
+    //  });
+
+     const estimate = await Estimate.findOne({ "raw.DocNumber": String(docNumber), realmId })
+      .populate({ path: "packages", match: { realmId } });
+      // .populate({ path: "invoices", match: { realmId } });
+
+      console.log('Fetched estimate:', estimate); 
+
+    if (!estimate || estimate.length === 0) {
+      return res.status(404).json({ message: 'Estimate not found' });
+    } 
+    res.json({
+      estimate
+    });
+  } catch (err) {
+    console.error('Error fetching estimates:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // POST /estimates/filter
 // This route filters estimates based on various criteria
 router.post('/filter', async (req, res) => {

@@ -4,6 +4,11 @@ import Invoice from '../models/invoice.js'; // Import your Invoice model
 import axios from 'axios';
 const connectedDb = await db.connect();
 
+  const QB_BASE_URL =
+      process.env.QUICKBOOKS_ENV === "production"
+        ? "https://quickbooks.api.intuit.com"
+        : "https://sandbox-quickbooks.api.intuit.com";
+
 export async function saveInvoiceInLocalInventory(invoiceData) {
   const invoice = new Invoice(invoiceData);
   await connectedDb.collection('invoices').insertOne(invoice);
@@ -16,7 +21,7 @@ export async function getInvoiceDetails(invoiceId) {
 // This function syncs all invoices from QuickBooks to the local database
 // It fetches all invoices and updates or creates them in the local inventory
 export async function syncInvoicesToDB(accessToken, realmId) {
-  const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query?query=SELECT * FROM Invoice&minorversion=65`;
+  const url = `${QB_BASE_URL}/v3/company/${realmId}/query?query=SELECT * FROM Invoice&minorversion=65`;
 
   const response = await axios.get(url, {
     headers: {
@@ -25,6 +30,7 @@ export async function syncInvoicesToDB(accessToken, realmId) {
     }
   });
 
+  console.log('Invoice sync started');
   const invoices = response.data.QueryResponse.Invoice || [];
 
   if (!Array.isArray(invoices)) {
@@ -69,7 +75,7 @@ export async function syncInvoicesToDB(accessToken, realmId) {
 
 export async function createInvoiceInQuickBooks(invoiceData, realmId, accessToken) {
 
-  const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/invoice?minorversion=65`;
+  const url = `${QB_BASE_URL}/v3/company/${realmId}/invoice?minorversion=65`;
 
   const res = await axios.post(url, invoiceData, {
     headers: {
