@@ -1,5 +1,6 @@
 // models/Package.js
 import mongoose from 'mongoose';
+import Counter from './counter.js';
 
 const packageLineSchema = new mongoose.Schema({
   itemId: { type: String, required: true },
@@ -15,12 +16,14 @@ const pkgSchema = new mongoose.Schema({
   lines: { type: [packageLineSchema], default: [] },
   notes: String,
 
-  // 🔹 NEW FIELDS
-  packageDate: { type: Date, required: true },      // e.g., today by default
-  shipmentDate: { type: Date },                     // when it ships/leaves
-  driverName: { type: String },                     // who’s delivering
-  packageCode: { type: String, unique: true },
-  quantities: { type: Map, of: Number, default: {} },      // human-friendly ID
+  packageDate: { type: Date, required: true, default: Date.now },
+  shipmentDate: { type: Date },
+  driverName: { type: String },
+
+  // 🔧 remove global unique
+  packageCode: { type: String }, 
+
+  quantities: { type: Map, of: Number, default: {} },
 
   totals: {
     lines: { type: Number, default: 0 },
@@ -28,56 +31,68 @@ const pkgSchema = new mongoose.Schema({
   },
   snapshot: {
     customerName: String,
-    txnDate: Date
+    txnDate: Date,
+    totalAmount: Number,
+    billTo: mongoose.Schema.Types.Mixed,
+    shipTo: mongoose.Schema.Types.Mixed
   },
-  status: { type: String, default: 'Created' }
+  status: {
+    type: String,
+    enum: ['Created', 'Shipped', 'Delivered', 'Cancelled'],
+    default: 'Created'
+  }
 }, { timestamps: true });
 
-// Simple generator: PKG-YYYYMMDD-XXXXXX
-function generatePackageCode() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `PKG-${y}${m}${day}-${rand}`;
+// Indexes
+pkgSchema.index({ realmId: 1, packageDate: -1 });
+pkgSchema.index({ realmId: 1, shipmentDate: -1 });
+pkgSchema.index({ realmId: 1, 'snapshot.customerName': 1 });
+pkgSchema.index({ realmId: 1, estimateId: 1 });
+
+// ✅ Make codes unique per realm
+pkgSchema.index({ realmId: 1, packageCode: 1 }, { unique: true, name: 'realm_packageCode_unique' });
+
+// Stronger code allocator (works for save and can be reused elsewhere)
+async function allocatePackageCode(realmId) {
+  const counter = await Counter.findOneAndUpdate(
+    { realmId },
+    { $setOnInsert: { seq: 0 }, $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  const padded = String(counter.seq).padStart(4, '0');
+  return `PKG-${padded}`;
 }
 
-pkgSchema.pre('save', async function (next) {
+// pre('save') for single inserts/updates
+pkgSchema.pre('save', async function(next) {
   if (this.packageCode) return next();
-
-  let code, exists;
-  for (let i = 0; i < 10; i++) {
-    const num = Math.floor(1000 + Math.random() * 9000); // 1000–9999
-    code = `PKG-${num}`;
-    exists = await this.constructor.findOne({ packageCode: code }).lean();
-    if (!exists) {
-      this.packageCode = code;
-      break;
+  try {
+    this.packageCode = await allocatePackageCode(this.realmId);
+    next();
+  } catch (err) {
+    if (err?.code === 11000) { // race or old index collision
+      try {
+        this.packageCode = await allocatePackageCode(this.realmId);
+        return next();
+      } catch (e2) {
+        return next(e2);
+      }
     }
+    next(err);
   }
-
-  if (!this.packageCode) {
-    return next(new Error('Failed to generate unique package code'));
-  }
-
-  next();
 });
 
-
-// pkgSchema.pre('save', async function (next) {
-//   if (!this.packageCode) {
-//     // Try until unique (very low collision chance, but safe loop)
-//     for (let i = 0; i < 5; i++) {
-//       const code = generatePackageCode();
-//       const exists = await this.constructor.findOne({ packageCode: code }).lean();
-//       if (!exists) {
-//         this.packageCode = code;
-//         break;
-//       }
-//     }
-//   }
-//   next();
-// });
-
-export default mongoose.model('Package', pkgSchema);
+// ⚠️ insertMany does NOT run pre('save'). Cover it:
+pkgSchema.pre('insertMany', async function(next, docs) {
+  try {
+    // Assign codes only where missing
+    for (const d of docs) {
+      if (!d.packageCode) {
+        d.packageCode = await allocatePackageCode(d.realmId);
+      }
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
