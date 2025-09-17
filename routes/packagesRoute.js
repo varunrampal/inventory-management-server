@@ -638,6 +638,7 @@ router.get("/:id", requireAdmin, async (req, res) => {
     _id: pkg._id,
     packageCode: pkg.packageCode,
     estimateId: estimate?.estimateId ?? pkg.estimateId,
+    docNumber: estimate.raw?.DocNumber ?? null,
     realmId: pkg.realmId,
     customerName: estimate?.customerName ?? pkg.snapshot?.customerName,
     packageDate: pkg.packageDate,
