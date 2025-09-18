@@ -6,9 +6,17 @@ dotenv.config();
 import Token from './models/token.js'; // Adjust the path as necessary
 
 const {
-  CLIENT_ID,
-  CLIENT_SECRET
+QUICKBOOKS_ENV,
+QB_PROD_CLIENT_ID,
+QB_SANDBOX_CLIENT_ID,
+QB_PROD_CLIENT_SECRET,
+QB_SANDBOX_CLIENT_SECRET
 } = process.env;
+
+const isProd = QUICKBOOKS_ENV === "production";
+const CLIENT_ID = isProd ? QB_PROD_CLIENT_ID : QB_SANDBOX_CLIENT_ID;
+const CLIENT_SECRET = isProd ? QB_PROD_CLIENT_SECRET : QB_SANDBOX_CLIENT_SECRET;
+
 
 /**
  * Save or update QuickBooks tokens in MongoDB
@@ -64,6 +72,7 @@ export const getValidAccessToken = async (realmId) => {
   }
 
   console.log('🔁 Access token expired. Refreshing...');
+
 
   // Refresh token request
   const res = await axios.post(
