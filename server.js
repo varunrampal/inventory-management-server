@@ -284,6 +284,7 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
     const notifications = req.body?.eventNotifications || [];
     for (const event of notifications) {
       const realmId = event.realmId;
+      console.log(realmId, 'Webhook event:', JSON.stringify(event));
 
       for (const entity of event.dataChangeEvent?.entities || []) {
         try {
