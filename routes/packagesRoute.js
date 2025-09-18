@@ -177,6 +177,7 @@ router.get("/packagelist", requireAdmin, async (req, res) => {
                       shipTo: 1,
                       ShipAddr: 1,
                       shipAddr: 1,
+                      docNumber: "$raw.DocNumber"
                     },
                   },
                 ],
