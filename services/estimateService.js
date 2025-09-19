@@ -17,6 +17,8 @@ const QB_BASE_URL =
 const MINOR = "65";           // current safe minor version
 const PAGE_SIZE = 1000;       // QBO max is 1000 per page
 
+const SHIPPING_ITEM_ID = process.env.QBO_SHIPPING_ITEM_ID || "SHIPPING_ITEM_ID"
+
 // This function syncs all estimates from QuickBooks to the local database
 // It fetches all estimates and updates or creates them in the local inventory
 // export async function syncEstimatesToDB(accessToken, realmId) {
@@ -78,6 +80,34 @@ const PAGE_SIZE = 1000;       // QBO max is 1000 per page
 //     }
 // }
 
+export function extractItemsFromQBOEstimate(est) {
+  const lines = Array.isArray(est?.Line) ? est.Line : [];
+
+  return lines
+    .filter(l => l?.DetailType === "SalesItemLineDetail")          // only sales items
+    .map(l => {
+      const d = l.SalesItemLineDetail || {};
+      const itemRef = d.ItemRef || {};
+      const qty = Number(d.Qty ?? l?.Qty ?? 0);
+      const unitPrice = Number(d.UnitPrice ?? 0);
+      const amount = Number(l?.Amount ?? ((qty * unitPrice) || 0));
+      const itemId = String(itemRef.value ?? "");
+
+      return {
+        itemId,
+        name: itemRef.name || l?.Description || "",
+        quantity: qty,
+        rate: unitPrice || (qty ? amount / qty : 0),
+        amount,
+      };
+    })
+    .filter(it =>
+      it.itemId &&                      // must have id
+      it.itemId !== SHIPPING_ITEM_ID && // exclude shipping sentinel
+      it.quantity >= 0                  // keep 0 if you need to show, or use > 0
+    );
+}
+
 export async function syncEstimatesToDB(accessToken, realmId) {
   console.log("Estimate sync started");
 
@@ -85,33 +115,31 @@ export async function syncEstimatesToDB(accessToken, realmId) {
   let totalSynced = 0;
 
   while (true) {
-    // SQL with pagination
     const sql = `SELECT * FROM Estimate STARTPOSITION ${start} MAXRESULTS ${PAGE_SIZE}`;
-    const url = qbUrl(realmId, "query", { query: sql, minorversion: MINOR });
-console.log('URL:', url);
+    const url = qbUrl(realmId, "query", { minorversion: MINOR });
     let data;
+
     try {
-      const res = await axios.get(url, {
+      const res = await axios.post(url, sql, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-           Accept: "application/json",
-           "Content-Type": "application/text; charset=utf-8",
+          Accept: "application/json",
+          "Content-Type": "application/text; charset=utf-8",
         },
       });
       data = res.data;
     } catch (err) {
-      // Helpful logging in prod
-      const data = err?.response?.data;
-      if (data?.fault?.error?.length) {
-        const e0 = data.fault.error[0];
+      const payload = err?.response?.data;
+      if (payload?.fault?.error?.length) {
+        const e0 = payload.fault.error[0];
         console.error("❌ QBO Fault:", {
           code: e0?.code,
           message: e0?.message,
           detail: e0?.detail,
-          type: data?.fault?.type,
+          type: payload?.fault?.type,
         });
       } else {
-        console.error("❌ Estimate page fetch error:", data || err.message);
+        console.error("❌ Estimate page fetch error:", payload || err.message);
       }
       throw err;
     }
@@ -119,30 +147,8 @@ console.log('URL:', url);
     const estimates = data?.QueryResponse?.Estimate || [];
     if (!Array.isArray(estimates) || estimates.length === 0) break;
 
-    // Upsert each estimate
     for (const est of estimates) {
-      const lines = Array.isArray(est.Line) ? est.Line : [];
-      const items = lines
-        .filter(l => l?.SalesItemLineDetail)
-        .map(l => {
-          const qtyRaw =
-            l?.SalesItemLineDetail?.Qty ??
-            l?.Qty ??
-            1;
-          const qty = Number(qtyRaw) > 0 ? Number(qtyRaw) : 1;
-          const amount = Number(l?.Amount) || 0;
-          const itemRef = l?.SalesItemLineDetail?.ItemRef || {};
-          return {
-            itemId: itemRef.value,
-            name: itemRef.name,
-            quantity: qty,
-            rate: qty ? amount / qty : amount, // guard divide-by-zero
-            amount,
-          };
-        });
-
-      // Map QBO status to your schema enum (defaults to Pending)
-      // QBO field is TxnStatus: e.g., "Accepted", "Closed", "Pending", "Rejected"
+      const items = extractItemsFromQBOEstimate(est);
       const txnStatus = est?.TxnStatus || "Pending";
 
       await Estimate.findOneAndUpdate(
@@ -152,7 +158,7 @@ console.log('URL:', url);
             customerName: est?.CustomerRef?.name || "",
             txnDate: est?.TxnDate || null,
             totalAmount: Number(est?.TotalAmt) || 0,
-            txnStatus,              // <— matches your schema
+            txnStatus,
             items,
             raw: est,
           },
@@ -167,46 +173,146 @@ console.log('URL:', url);
       totalSynced++;
     }
 
-    // next page
     if (estimates.length < PAGE_SIZE) break;
     start += PAGE_SIZE;
   }
 
   console.log(`✅ Synced ${totalSynced} estimates`);
 }
-// This function syncs a specific estimate to the local inventory
-// It fetches the estimate details from QuickBooks and updates the local inventory
+
+// export async function syncEstimatesToDB(accessToken, realmId) {
+//   console.log("Estimate sync started");
+
+//   let start = 1;
+//   let totalSynced = 0;
+
+//   while (true) {
+//     // SQL with pagination
+//     const sql = `SELECT * FROM Estimate STARTPOSITION ${start} MAXRESULTS ${PAGE_SIZE}`;
+//     const url = qbUrl(realmId, "query", { query: sql, minorversion: MINOR });
+//     console.log('URL:', url);
+//     let data;
+//     try {
+//       const res = await axios.get(url, {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//            Accept: "application/json",
+//            "Content-Type": "application/text; charset=utf-8",
+//         },
+//       });
+//       data = res.data;
+//     } catch (err) {
+//       // Helpful logging in prod
+//       const data = err?.response?.data;
+//       if (data?.fault?.error?.length) {
+//         const e0 = data.fault.error[0];
+//         console.error("❌ QBO Fault:", {
+//           code: e0?.code,
+//           message: e0?.message,
+//           detail: e0?.detail,
+//           type: data?.fault?.type,
+//         });
+//       } else {
+//         console.error("❌ Estimate page fetch error:", data || err.message);
+//       }
+//       throw err;
+//     }
+
+//     const estimates = data?.QueryResponse?.Estimate || [];
+//     if (!Array.isArray(estimates) || estimates.length === 0) break;
+
+//     // Upsert each estimate
+//     for (const est of estimates) {
+//       const lines = Array.isArray(est.Line) ? est.Line : [];
+//       const items = lines
+//         .filter(l => l?.SalesItemLineDetail)
+//         .map(l => {
+//           const qtyRaw =
+//             l?.SalesItemLineDetail?.Qty ??
+//             l?.Qty ??
+//             1;
+//           const qty = Number(qtyRaw) > 0 ? Number(qtyRaw) : 1;
+//           const amount = Number(l?.Amount) || 0;
+//           const itemRef = l?.SalesItemLineDetail?.ItemRef || {};
+//           return {
+//             itemId: itemRef.value,
+//             name: itemRef.name,
+//             quantity: qty,
+//             rate: qty ? amount / qty : amount, // guard divide-by-zero
+//             amount,
+//           };
+//         });
+
+//       // Map QBO status to your schema enum (defaults to Pending)
+//       // QBO field is TxnStatus: e.g., "Accepted", "Closed", "Pending", "Rejected"
+//       const txnStatus = est?.TxnStatus || "Pending";
+
+//       await Estimate.findOneAndUpdate(
+//         { estimateId: String(est.Id), realmId: String(realmId) },
+//         {
+//           $set: {
+//             customerName: est?.CustomerRef?.name || "",
+//             txnDate: est?.TxnDate || null,
+//             totalAmount: Number(est?.TotalAmt) || 0,
+//             txnStatus,              // <— matches your schema
+//             items,
+//             raw: est,
+//           },
+//           $setOnInsert: {
+//             estimateId: String(est.Id),
+//             realmId: String(realmId),
+//           },
+//         },
+//         { upsert: true, new: false }
+//       );
+
+//       totalSynced++;
+//     }
+
+//     // next page
+//     if (estimates.length < PAGE_SIZE) break;
+//     start += PAGE_SIZE;
+//   }
+
+//   console.log(`✅ Synced ${totalSynced} estimates`);
+// }
+
 export const syncEstimateToInventory = async (accessToken, realmId, estimateId) => {
   try {
-    const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}`;
-
+    const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}?minorversion=${MINOR}`;
     const res = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json'
-      }
+        Accept: "application/json",
+      },
+      timeout: 20000,
     });
 
-    const estimate = res.data.Estimate;
-    console.log(estimate)
+    const estimate = res.data?.Estimate;
+    if (!estimate) {
+      console.warn(`⚠️ No Estimate returned for ${estimateId}`);
+      return;
+    }
 
-    for (const line of estimate.Line) {
-      if (line.SalesItemLineDetail) {
-        const itemRef = line.SalesItemLineDetail.ItemRef;
-        const qty = line.SalesItemLineDetail.Qty;
-        const itemId = itemRef.value;
-        const itemName = itemRef.name;
+    const lines = Array.isArray(estimate.Line) ? estimate.Line : [];
+    for (const line of lines) {
+      if (line?.DetailType !== "SalesItemLineDetail") continue;
 
-        console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
+      const d = line.SalesItemLineDetail || {};
+      const itemRef = d.ItemRef || {};
+      const qty = Number(d.Qty ?? 0);
+      const itemId = String(itemRef.value ?? "");
 
+      // Skip shipping sentinel or invalid qty
+      if (!itemId || itemId === SHIPPING_ITEM_ID || qty <= 0) continue;
+
+      const itemName = itemRef.name || line.Description || itemId;
+      console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
+
+      try {
         await updateLocalInventory(itemId, -qty);
-
-
-        // You could reserve stock here or just log it
-        // await updateItemByQuickBooksId(db, itemId, {
-        //   lastEstimatedQty: qty,
-        //   lastEstimatedAt: new Date()
-        // });
+      } catch (e) {
+        console.error(`❌ Failed inventory update for ${itemId}`, e.message);
       }
     }
 
@@ -215,6 +321,51 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
     console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
   }
 };
+
+
+
+
+// This function syncs a specific estimate to the local inventory
+// It fetches the estimate details from QuickBooks and updates the local inventory
+// export const syncEstimateToInventory = async (accessToken, realmId, estimateId) => {
+//   try {
+//     const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}`;
+
+//     const res = await axios.get(url, {
+//       headers: {
+//         Authorization: `Bearer ${accessToken}`,
+//         Accept: 'application/json'
+//       },
+//     });
+
+//     const estimate = res.data.Estimate;
+//     console.log(estimate)
+
+//     for (const line of estimate.Line) {
+//       if (line.SalesItemLineDetail) {
+//         const itemRef = line.SalesItemLineDetail.ItemRef;
+//         const qty = line.SalesItemLineDetail.Qty;
+//         const itemId = itemRef.value;
+//         const itemName = itemRef.name;
+
+//         console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
+
+//         await updateLocalInventory(itemId, -qty);
+
+
+//         // You could reserve stock here or just log it
+//         // await updateItemByQuickBooksId(db, itemId, {
+//         //   lastEstimatedQty: qty,
+//         //   lastEstimatedAt: new Date()
+//         // });
+//       }
+//     }
+
+//     console.log(`✅ Estimate ${estimateId} processed`);
+//   } catch (err) {
+//     console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
+//   }
+// };
 
 // This function fetches the details of a specific estimate from QuickBooks
 // It returns the estimate object containing all relevant information

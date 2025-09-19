@@ -20,6 +20,13 @@ const EstimateSchema = new mongoose.Schema({
   enum: ['Pending', 'Accepted', 'Declined', 'Closed'],
   default: 'Pending'
 },
+shipping: {
+    amount: { type: Number, default: 0 },
+    item: {
+      id: String,
+      name: String,
+    }
+  },
   items: [EstimateItemSchema],
   raw: mongoose.Schema.Types.Mixed, // full raw QuickBooks object (optional)
 }, { timestamps: true });
