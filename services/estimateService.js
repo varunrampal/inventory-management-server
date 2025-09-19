@@ -339,7 +339,7 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
 
     try {
       // Decrement local inventory by the estimated quantity
-      await updateLocalInventory(itemId, -qty);
+      await updateLocalInventory(itemId, -qty, realmId);
      // touched++;
       console.log(`📦 Reserved (estimate) ${qty} of ${itemName} [${itemId}]`);
     } catch (e) {
@@ -420,32 +420,92 @@ export const getEstimateDetails = async (accessToken, realmId, estimateId) => {
   return res.data.Estimate;
 };
 
-export const saveEstimateInLocalInventory = async (estimate, realmId) => {
-  console.log('estimate:', estimate);
+// export const saveEstimateInLocalInventory = async (estimate, realmId) => {
+//   console.log('estimate:', estimate);
 
-  console.log('estimate.Line:', estimate.Line);
-  await Estimate.create({
-    estimateId: estimate.Id,
-    customerName: estimate.CustomerRef?.name || 'Unknown',
-    txnDate: estimate.TxnDate,
-    totalAmount: estimate.TotalAmt,
-    realmId,
-    items: Array.isArray(estimate.Line)
-      ? estimate.Line
-        .filter(line => line.SalesItemLineDetail)
-        .map(line => ({
-          name: line.SalesItemLineDetail.ItemRef?.name || 'Unnamed',
-          itemId: line.SalesItemLineDetail.ItemRef?.value,
-          quantity: line.SalesItemLineDetail.Qty || 0,
-          rate: line.SalesItemLineDetail.UnitPrice || 0,
-          amount: line.SalesItemLineDetail.Amount || 0
-        }))
-      : [],
-    raw: estimate
+//   console.log('estimate.Line:', estimate.Line);
+//   await Estimate.create({
+//     estimateId: estimate.Id,
+//     customerName: estimate.CustomerRef?.name || 'Unknown',
+//     txnDate: estimate.TxnDate,
+//     totalAmount: estimate.TotalAmt,
+//     realmId,
+//     items: Array.isArray(estimate.Line)
+//       ? estimate.Line
+//         .filter(line => line.SalesItemLineDetail)
+//         .map(line => ({
+//           name: line.SalesItemLineDetail.ItemRef?.name || 'Unnamed',
+//           itemId: line.SalesItemLineDetail.ItemRef?.value,
+//           quantity: line.SalesItemLineDetail.Qty || 0,
+//           rate: line.SalesItemLineDetail.UnitPrice || 0,
+//           amount: line.SalesItemLineDetail.Amount || 0
+//         }))
+//       : [],
+//     raw: estimate
+//   });
+
+
+//   console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}`);
+// };
+
+
+// saveEstimateInLocalInventory.js
+export const saveEstimateInLocalInventory = async (estimate, realmId, { shippingItemId } = {}) => {
+  // Defensive parsing
+  const lines = Array.isArray(estimate?.Line) ? estimate.Line : [];
+
+  // Sales item lines only
+  const salesLines = lines.filter(l => l?.DetailType === 'SalesItemLineDetail');
+
+  // Build items array (use top-level line.Amount; Qty/UnitPrice from detail)
+  const items = salesLines.map(line => {
+    const d = line.SalesItemLineDetail || {};
+    const ref = d.ItemRef || {};
+    return {
+      name: ref.name || line.Description || 'Unnamed',
+      itemId: ref.value,
+      quantity: Number(d.Qty ?? 0),
+      rate: Number(d.UnitPrice ?? 0),
+      amount: Number(line.Amount ?? 0),
+    };
   });
 
+  // Identify shipping lines
+  const isShippingLine = (line) => {
+    const d = line.SalesItemLineDetail || {};
+    const ref = d.ItemRef || {};
+    const nm = (ref.name || line.Description || '').toString();
+    if (shippingItemId && String(ref.value) === String(shippingItemId)) return true;
+    return /shipping|freight|delivery/i.test(nm);
+  };
 
-  console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}`);
+  const shippingLines = salesLines.filter(isShippingLine);
+  const shippingAmount = shippingLines.reduce((sum, ln) => sum + Number(ln.Amount ?? 0), 0);
+
+  // Derive shipping tax (only when a single rate applies)
+  let shippingTax = 0;
+  const taxDetail = estimate?.TxnTaxDetail;
+  if (taxDetail && Array.isArray(taxDetail.TaxLine) && taxDetail.TaxLine.length === 1) {
+    const rate = Number(taxDetail.TaxLine[0]?.TaxLineDetail?.RateValue ?? NaN);
+    if (Number.isFinite(rate)) {
+      shippingTax = Number((shippingAmount * rate / 100).toFixed(2));
+    }
+  }
+
+  await Estimate.create({
+    estimateId: estimate.Id,
+    realmId,
+    customerName: estimate.CustomerRef?.name || 'Unknown',
+    txnDate: estimate.TxnDate,
+    totalAmount: Number(estimate.TotalAmt ?? 0),
+    txnStatus: estimate.TxnStatus || 'Pending',
+    shippingAmount,
+    shippingTax,
+    items,
+    raw: estimate,
+  });
+
+  console.log(`✅ Saved estimate ${estimate.Id} for customer ${estimate.CustomerRef?.name}; shipping: $${shippingAmount.toFixed(2)}, tax: $${shippingTax.toFixed(2)}`);
 };
 
 

@@ -17,16 +17,17 @@ export const updateLocalInventory = async (itemId, qtyChange, realmId) => {
  if (!item) {
   console.warn(`⚠️ Item not found in local inventory: ${itemId}`);
 // ✅ Create new item with qtyChange as starting quantity
-    const newItem = new Item({
-      itemId,
-      realmId,
-      name: 'Unnamed Item', // or use external metadata if available
-      quantity: qtyChange,
-      createdAt: now,
-      updatedAt: now
-    });
+    // const newItem = new Item({
+    //   itemId,
+    //   realmId,
+    //   name: 'Unnamed Item', // or use external metadata if available
+    //   quantity: qtyChange,
+    //   createdAt: now,
+    //   updatedAt: now
+    // });
 
-    await newItem.save();
+    // await newItem.save();
+    return null;
 
     console.log(`➕ Created new item ${itemId} with quantity ${qtyChange}`);
   }else{
