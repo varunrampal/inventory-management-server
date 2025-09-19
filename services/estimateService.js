@@ -351,8 +351,11 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
     console.log(`✅ Estimate ${estimateId} processed`);
   } catch (err) {
     console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
+    return 0;
+  }finally {
+    const docNo = estimate?.DocNumber || String(estimateId);
+    console.log(`✅ Estimate ${docNo} processed; items touched: ${touched}`);
   }
-  console.log(`✅ Estimate ${estimate.DocNumber || estimateId} processed; items touched: ${touched}`);
 };
 
 
