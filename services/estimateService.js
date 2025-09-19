@@ -278,6 +278,12 @@ export async function syncEstimatesToDB(accessToken, realmId) {
 // }
 
 export const syncEstimateToInventory = async (accessToken, realmId, estimateId) => {
+
+  if (!accessToken) throw new Error("syncEstimateToInventory: missing accessToken");
+  if (!realmId) throw new Error("syncEstimateToInventory: missing realmId");
+  if (!estimateId) throw new Error("syncEstimateToInventory: missing estimateId");
+  let estimate;
+  
   try {
     const url = `${QB_BASE_URL}/v3/company/${realmId}/estimate/${estimateId}?minorversion=${MINOR}`;
     const res = await axios.get(url, {
@@ -288,38 +294,65 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
       timeout: 20000,
     });
 
-    const estimate = res.data?.Estimate;
+     estimate = res.data?.Estimate;
+
     if (!estimate) {
       console.warn(`⚠️ No Estimate returned for ${estimateId}`);
       return;
     }
 
+// Helpful high-level log
+  console.log("🔗 Processing Estimate", {
+    realmId: String(realmId),
+    estimateId: String(estimateId),
+    docNumber: estimate.DocNumber || null,
+    customer: estimate?.CustomerRef?.name || null,
+    status: estimate?.TxnStatus || null,
+    shipDate: estimate?.ShipDate || null,
+  });
+
     const lines = Array.isArray(estimate.Line) ? estimate.Line : [];
-    for (const line of lines) {
-      if (line?.DetailType !== "SalesItemLineDetail") continue;
+    
+  let touched = 0;
 
-      const d = line.SalesItemLineDetail || {};
-      const itemRef = d.ItemRef || {};
-      const qty = Number(d.Qty ?? 0);
-      const itemId = String(itemRef.value ?? "");
+  for (const ln of lines) {
+    const detailType = ln?.DetailType;
 
-      // Skip shipping sentinel or invalid qty
-      if (!itemId || itemId === SHIPPING_ITEM_ID || qty <= 0) continue;
+    // Skip non sales lines
+    if (detailType !== "SalesItemLineDetail") continue;
 
-      const itemName = itemRef.name || line.Description || itemId;
-      console.log(`🔍 Estimate includes item ${itemName} x${qty}`);
+    const d = ln.SalesItemLineDetail || {};
+    const itemRef = d.ItemRef || {};
+    const itemId = String(itemRef.value ?? "");
 
-      try {
-        await updateLocalInventory(itemId, -qty);
-      } catch (e) {
-        console.error(`❌ Failed inventory update for ${itemId}`, e.message);
-      }
+    // Skip “shipping item” rows if you model shipping as an Item
+    if (!itemId || itemId === SHIPPING_ITEM_ID) continue;
+
+    // Qty & rate safety
+    // Sometimes QBO may omit Qty or UnitPrice; only Qty matters for inventory
+    const qty = Number(d.Qty ?? 0);
+
+    // Skip zero/neg quantities
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+
+    const itemName = itemRef.name || ln.Description || itemId;
+
+    try {
+      // Decrement local inventory by the estimated quantity
+      await updateLocalInventory(itemId, -qty);
+      touched++;
+      console.log(`📦 Reserved (estimate) ${qty} of ${itemName} [${itemId}]`);
+    } catch (e) {
+      console.error(`❌ Local inventory update failed for ${itemId} (${itemName})`, e?.message || e);
+      // Continue with others
     }
+  }
 
     console.log(`✅ Estimate ${estimateId} processed`);
   } catch (err) {
     console.error(`❌ Failed to sync estimate ${estimateId}:`, err.response?.data || err.message);
   }
+  console.log(`✅ Estimate ${estimate.DocNumber || estimateId} processed; items touched: ${touched}`);
 };
 
 
