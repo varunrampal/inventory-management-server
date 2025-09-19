@@ -313,7 +313,7 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
 
     const lines = Array.isArray(estimate.Line) ? estimate.Line : [];
     
-  let touched = 0;
+  //let touched = 0;
 
   for (const ln of lines) {
     const detailType = ln?.DetailType;
@@ -340,7 +340,7 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
     try {
       // Decrement local inventory by the estimated quantity
       await updateLocalInventory(itemId, -qty);
-      touched++;
+     // touched++;
       console.log(`📦 Reserved (estimate) ${qty} of ${itemName} [${itemId}]`);
     } catch (e) {
       console.error(`❌ Local inventory update failed for ${itemId} (${itemName})`, e?.message || e);
@@ -354,7 +354,7 @@ export const syncEstimateToInventory = async (accessToken, realmId, estimateId) 
     return 0;
   }finally {
     const docNo = estimate?.DocNumber || String(estimateId);
-    console.log(`✅ Estimate ${docNo} processed; items touched: ${touched}`);
+    console.log(`✅ Estimate ${docNo} processed for Realm ${realmId}`);
   }
 };
 
