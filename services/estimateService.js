@@ -739,51 +739,155 @@ export function buildRemainingIndex(estimate) {
 }
 
 
+// export async function recomputeEstimateFulfilled({ estimateId, realmId }) {
+//   // Sum this estimate's package quantities by item key
+//   const totals = await Package.aggregate([
+//     { $match: { estimateId, realmId } },
+//     { $project: { pairs: { $objectToArray: "$quantities" } } },
+//     { $unwind: "$pairs" },
+//     { $group: { _id: "$pairs.k", total: { $sum: { $toDouble: "$pairs.v" } } } },
+//   ]);
+//   const totalsByKey = Object.fromEntries(totals.map(t => [String(t._id), t.total]));
+//   console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in realm ${realmId}`);
+//   const est = await Estimate.findOne({ estimateId, realmId });
+//   if (!est) return;
+
+//   let changed = false;
+
+//   for (const it of est.items || []) {
+//     // 🔒 ensure itemId exists (temporary fallback to name)
+//     if (!it.itemId) { it.itemId = it.name; changed = true; }
+
+//     const key = String(it.itemId);
+//     const summed = Number(totalsByKey[key] || 0);
+//     const ordered = Number(it.quantity ?? Infinity);
+
+//     console.log(`Ordered quantity for item ${key}:`, ordered);
+//     console.log(`Summed quantity for item ${key}:`, summed);
+
+//     const nextFulfilled = Math.min(summed, ordered);
+//     console.log(`Next fulfilled quantity for item ${key}:`, nextFulfilled);
+//     if (it.fulfilled !== nextFulfilled) {
+//       it.fulfilled = nextFulfilled;
+//       changed = true;
+//     }
+//   }
+//   console.log(changed ? 'Changes detected in fulfilled quantities.' : 'No changes in fulfilled quantities.');
+//   console.log(`Recomputed fulfilled quantities for estimate ${estimateId}:`, est.items);
+
+//   if (changed) est.markModified("items");
+//   // Guard right before save
+//   for (const [i, it] of (est.items || []).entries()) {
+//     if (!it.itemId) throw new Error(`Estimate items missing itemId at index ${i}`);
+//   }
+
+//   console.log(`Saving updated estimate ${estimateId} in realm ${realmId}`);
+//   await est.save();
+// }
+
+
 export async function recomputeEstimateFulfilled({ estimateId, realmId }) {
-  // Sum this estimate's package quantities by item key
+  // 1) Sum this estimate's package quantities by item key (string keys)
   const totals = await Package.aggregate([
     { $match: { estimateId, realmId } },
     { $project: { pairs: { $objectToArray: "$quantities" } } },
     { $unwind: "$pairs" },
-    { $group: { _id: "$pairs.k", total: { $sum: { $toDouble: "$pairs.v" } } } },
+    { $group: { _id: { $toString: "$pairs.k" }, total: { $sum: { $toDouble: "$pairs.v" } } } },
   ]);
-  const totalsByKey = Object.fromEntries(totals.map(t => [String(t._id), t.total]));
-  console.log(`Recomputing fulfilled quantities for estimate ${estimateId} in realm ${realmId}`);
+  const totalsByKey = Object.fromEntries(totals.map(t => [String(t._id), Number(t.total || 0)]));
+
+  console.log(`Recomputing fulfilled for estimate ${estimateId} / realm ${realmId}`);
+
   const est = await Estimate.findOne({ estimateId, realmId });
   if (!est) return;
 
   let changed = false;
+  let repaired = false;
 
-  for (const it of est.items || []) {
-    // 🔒 ensure itemId exists (temporary fallback to name)
-    if (!it.itemId) { it.itemId = it.name; changed = true; }
+  // 2) Heal/clean items list BEFORE computing fulfilled
+  // - ensure each item has itemId (prefer raw ItemRef.value, then existing itemId, then name)
+  // - ensure name present (from raw or fallback to itemId)
+  // - drop truly corrupt blanks (no itemId and no name)
+  const healed = [];
+  for (const [idx, rawIt] of (est.items || []).entries()) {
+    if (!rawIt || typeof rawIt !== "object") {
+      console.warn(`[heal] Dropping non-object item at index ${idx}:`, rawIt);
+      repaired = true;
+      continue;
+    }
 
+    const itemRefVal =
+      rawIt?.raw?.SalesItemLineDetail?.ItemRef?.value ??
+      rawIt?.SalesItemLineDetail?.ItemRef?.value; // in case raw was flattened
+
+    let itemId = rawIt.itemId ?? itemRefVal ?? rawIt.name ?? null;
+    let name =
+      rawIt.name ??
+      rawIt?.raw?.SalesItemLineDetail?.ItemRef?.name ??
+      rawIt?.SalesItemLineDetail?.ItemRef?.name ??
+      (itemId != null ? String(itemId) : null);
+
+    if (!itemId && !name) {
+      console.warn(`[heal] Dropping empty item at index ${idx}:`, rawIt);
+      repaired = true;
+      continue;
+    }
+
+    // normalize
+    itemId = String(itemId);
+    if (!rawIt.itemId) repaired = true;
+    if (!rawIt.name) repaired = true;
+
+    const it = {
+      ...rawIt,
+      itemId,
+      name: name ?? itemId,
+      quantity: Number(rawIt.quantity ?? 0),
+      fulfilled: Number(rawIt.fulfilled ?? 0),
+    };
+
+    healed.push(it);
+  }
+
+  if (healed.length !== (est.items || []).length) repaired = true;
+  if (repaired) {
+    est.items = healed;
+    est.markModified("items");
+  }
+
+  // 3) Compute fulfilled with caps
+  for (const it of est.items) {
     const key = String(it.itemId);
     const summed = Number(totalsByKey[key] || 0);
-    const ordered = Number(it.quantity ?? Infinity);
+    const ordered = Number(it.quantity ?? 0);
 
-    console.log(`Ordered quantity for item ${key}:`, ordered);
-    console.log(`Summed quantity for item ${key}:`, summed);
+    // if ordered is missing or non-finite, treat as uncapped
+    const hasCap = Number.isFinite(ordered) && ordered > 0;
+    const nextFulfilled = hasCap ? Math.min(summed, ordered) : summed;
 
-    const nextFulfilled = Math.min(summed, ordered);
-    console.log(`Next fulfilled quantity for item ${key}:`, nextFulfilled);
     if (it.fulfilled !== nextFulfilled) {
+      console.log(`[set] item ${key}: ordered=${ordered} summed=${summed} -> fulfilled=${nextFulfilled}`);
       it.fulfilled = nextFulfilled;
       changed = true;
     }
   }
-  console.log(changed ? 'Changes detected in fulfilled quantities.' : 'No changes in fulfilled quantities.');
-  console.log(`Recomputed fulfilled quantities for estimate ${estimateId}:`, est.items);
 
-  if (changed) est.markModified("items");
-  // Guard right before save
+  // 4) Final guard (after healing) — should not trip now
   for (const [i, it] of (est.items || []).entries()) {
-    if (!it.itemId) throw new Error(`Estimate items missing itemId at index ${i}`);
+    if (!it.itemId) {
+      console.error(`Still missing itemId at index ${i} after healing`, it);
+      throw new Error(`Estimate items missing itemId at index ${i}`);
+    }
   }
 
-  console.log(`Saving updated estimate ${estimateId} in realm ${realmId}`);
-  await est.save();
+  if (changed || repaired) {
+    console.log(`Saving updated estimate ${estimateId} (changed=${changed}, repaired=${repaired})`);
+    await est.save();
+  } else {
+    console.log("No changes to save.");
+  }
 }
+
 
 export async function recomputeFulfilledForEstimate({ estimateId, realmId }, session) {
   // 1) Sum quantities from non-deleted packages
@@ -829,21 +933,23 @@ export async function recomputeFulfilledForEstimate({ estimateId, realmId }, ses
 }
 
 
-export async function recomputeEstimateFulfilledOnDelete({ estimateId, realmId }, session = null) {
-  // 1) Sum qty per item from *active* packages only
+export async function recomputeEstimateFulfilledOnDelete(
+  { estimateId, realmId, alsoUpdateStatus = true },
+  session = null
+) {
+  const match = {
+    estimateId: String(estimateId),
+    realmId: String(realmId),
+  };
+
+  // 1) Sum qty per itemId across all remaining packages (hard delete already removed doc)
   const pipeline = [
-    {
-      $match: {
-        estimateId,
-        realmId,
-        $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
-      },
-    },
-    { $project: { pairs: { $objectToArray: "$quantities" } } },
+    { $match: match },
+    { $project: { pairs: { $objectToArray: { $ifNull: ["$quantities", {}] } } } },
     { $unwind: "$pairs" },
     {
       $group: {
-        _id: "$pairs.k",
+        _id: "$pairs.k", // item key stored in Package.quantities
         total: {
           $sum: {
             $convert: { input: "$pairs.v", to: "double", onError: 0, onNull: 0 },
@@ -852,44 +958,82 @@ export async function recomputeEstimateFulfilledOnDelete({ estimateId, realmId }
       },
     },
   ];
-
   const agg = Package.aggregate(pipeline);
   if (session) agg.session(session);
   const totals = await agg;
 
-  const totalsByKey = new Map(totals.map((t) => [String(t._id), Number(t.total || 0)]));
+  const totalsByKey = new Map(totals.map(t => [String(t._id), Number(t.total || 0)]));
+  const hasTotals = totalsByKey.size > 0; // true if any packages remain
 
-  // 2) Load estimate in same session (if provided)
-  const findQ = Estimate.findOne({ estimateId, realmId });
+  // 2) Load estimate
+  const findQ = Estimate.findOne({ estimateId: String(estimateId), realmId: String(realmId) });
   if (session) findQ.session(session);
   const est = await findQ;
   if (!est) return null;
 
-  // 3) Build targeted $set to avoid re-validating whole array
+  // 3) Build minimal $set
   const setPaths = {};
+  let allMet = true;
+
+  const toNum = (v, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+
   (est.items || []).forEach((it, idx) => {
-    if (!it?.itemId) return; // skip non-product rows; prevents "itemId required" errors
-    const key = String(it.itemId);
-    const summed = totalsByKey.get(key) ?? 0;
-    const ordered = Number(it.quantity ?? Infinity);
-    const next = Math.min(summed, ordered);
-    if (Number(it.fulfilled ?? 0) !== next) {
+    const ordered = toNum(it?.quantity, 0);
+
+    // Prefer itemId; fall back to name (optional, so we can map future cycles)
+    let key = null;
+    if (it?.itemId != null) key = String(it.itemId);
+    else if (it?.name) {
+      key = String(it.name);
+      // Optional: backfill itemId for future consistency
+      setPaths[`items.${idx}.itemId`] = key;
+    }
+
+    let next;
+    if (hasTotals) {
+      // If there are packages left, only update lines we can map
+      if (!key || !totalsByKey.has(key)) {
+        // Can't map this row to any package total—leave fulfilled as-is.
+        const current = toNum(it?.fulfilled, 0);
+        const lineMet = ordered <= 0 ? true : current >= ordered;
+        allMet = allMet && lineMet;
+        return;
+      }
+      const summed = toNum(totalsByKey.get(key), 0);
+      next = Math.max(0, Math.min(summed, ordered));
+    } else {
+      // No packages left → zero everything
+      next = 0;
+    }
+
+    if (toNum(it?.fulfilled, 0) !== next) {
       setPaths[`items.${idx}.fulfilled`] = next;
     }
+
+    const lineMet = ordered <= 0 ? true : next >= ordered;
+    allMet = allMet && lineMet;
   });
+
+  // 4) Optional status sync
+  if (alsoUpdateStatus && typeof est.txnStatus === "string") {
+    const nextStatus = allMet && est.txnStatus !== "Declined" ? "Closed" : est.txnStatus;
+    if (nextStatus !== est.txnStatus) setPaths["txnStatus"] = nextStatus;
+  }
 
   if (Object.keys(setPaths).length) {
     await Estimate.updateOne(
       { _id: est._id },
       { $set: setPaths },
-      { session, runValidators: false } // update only fulfilled fields
+      { session, runValidators: false }
     );
   }
 
-  // 4) Return fresh doc (still in session if provided)
   const reloadQ = Estimate.findById(est._id);
   if (session) reloadQ.session(session);
-  return reloadQ;
+  return await reloadQ.lean();
 }
 
 
@@ -918,3 +1062,49 @@ export async function recomputeEstimateFulfilledOnDelete({ estimateId, realmId }
 //   await estimate.save({ session });
 //   return estimate;
 // }
+
+// deletes estimate + all its packages atomically
+export async function deleteLocalEstimate(estimateId, realmId) {
+  const session = await mongoose.startSession();
+  try {
+    let result = { deletedEstimate: 0, deletedPackages: 0 };
+
+    await session.withTransaction(async () => {
+      const est = await Estimate.findOne({ estimateId: String(estimateId), realmId: String(realmId) })
+        .session(session);
+
+      if (!est) {
+        // Throw inside txn so we abort cleanly
+        const err = new Error(`Estimate ${estimateId} not found for realm ${realmId}`);
+        err.status = 404;
+        throw err;
+      }
+
+      // First delete all packages tied to this estimate
+      const pkgRes = await Package.deleteMany({
+        estimateId: String(estimateId),
+        realmId: String(realmId),
+      }).session(session);
+
+      // Then delete the estimate itself
+      const estRes = await Estimate.deleteOne({
+        estimateId: String(estimateId),
+        realmId: String(realmId),
+      }).session(session);
+
+      result.deletedPackages = pkgRes.deletedCount || 0;
+      result.deletedEstimate = estRes.deletedCount || 0;
+    });
+
+    console.log(`🗑️ Deleted estimate ${estimateId} and ${result.deletedPackages} package(s) in realm ${realmId}`);
+    return result;
+  } catch (err) {
+    // If we threw a 404 above, keep the status for the route to use
+    if (!err.status) err.status = 500;
+    console.error("Delete estimate failed:", err);
+    throw err;
+  } finally {
+    session.endSession();
+  }
+}
+

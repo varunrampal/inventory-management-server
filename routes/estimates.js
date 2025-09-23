@@ -128,6 +128,7 @@ console.log(filter.txnDate, 'Filter Date Range:', startDate, endDate);
 
       return {
         estimateId: estimate.estimateId,
+        docNumber: estimate.raw?.DocNumber,
         customerName: estimate.customerName,
         quantity,
         txnDate: estimate.txnDate

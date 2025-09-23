@@ -697,37 +697,114 @@ router.put("/:id", requireAdmin, async (req, res) => {
   }
 });
 
+// router.delete("/:id", async (req, res) => {
+//   const session = await mongoose.startSession();
+//   try {
+//     console.log('deleting package:', req.params.id);
+//     await session.withTransaction(async () => {
+//       const pkg = await Package.findById(req.params.id).session(session);
+//       if (!pkg) return res.status(404).send("Package not found");
+
+//       // SOFT DELETE is safer (keeps history)
+//       // pkg.deletedAt = new Date();
+//       // await pkg.save({ session });
+//       await Package.deleteOne({ _id: req.params.id }).session(session);
+//      console.log('pkg deleted:', req.params.id); 
+//       // const estimate = await recomputeFulfilledForEstimate(
+//       //   { estimateId: pkg.estimateId, realmId: pkg.realmId },
+//       //   session
+//       // );
+
+//           const estimate = await recomputeEstimateFulfilledOnDelete(
+//         { estimateId: pkg.estimateId, realmId: pkg.realmId },session
+//       );
+//       console.log('estimate adjusted:', pkg.estimateId);
+//       res.json({ success: true, estimate });
+//     });
+//   } catch (e) {
+//     console.error(e);
+//     res.status(500).send(e.message);
+//   } finally {
+//     session.endSession();
+//   }
+// });
+
 router.delete("/:id", async (req, res) => {
   const session = await mongoose.startSession();
+
   try {
-    console.log('deleting package:', req.params.id);
+    let result = null; // we’ll fill this inside the txn
+
     await session.withTransaction(async () => {
-      const pkg = await Package.findById(req.params.id).session(session);
-      if (!pkg) return res.status(404).send("Package not found");
+      const id = req.params.id;
+      console.log("deleting package:", id);
 
-      // SOFT DELETE is safer (keeps history)
-      // pkg.deletedAt = new Date();
-      // await pkg.save({ session });
-      await Package.deleteOne({ _id: req.params.id }).session(session);
-     console.log('pkg deleted:', req.params.id); 
-      // const estimate = await recomputeFulfilledForEstimate(
-      //   { estimateId: pkg.estimateId, realmId: pkg.realmId },
-      //   session
-      // );
+      // 1) Load identifiers BEFORE hard delete
+      const pkg = await Package.findById(id).session(session);
+      if (!pkg) {
+        // Don’t send the response from inside the txn; just throw to exit cleanly
+        const err = new Error("Package not found");
+        err.status = 404;
+        throw err;
+      }
 
-          const estimate = await recomputeEstimateFulfilledOnDelete(
-        { estimateId: pkg.estimateId, realmId: pkg.realmId },session
+      // 2) Hard delete with the SAME session
+      await Package.deleteOne({ _id: id }, { session });
+      console.log("pkg deleted:", id);
+
+ // 2) ⬇️ PASTE THIS DIAGNOSTIC BLOCK RIGHT HERE ⬇️
+      const totals = await Package.aggregate([
+        { $match: {
+            estimateId: String(pkg.estimateId),
+            realmId: String(pkg.realmId),
+            // only active packages remain (we just deleted one)
+          }
+        },
+        { $project: { pairs: { $objectToArray: { $ifNull: ["$quantities", {}] } } } },
+        { $unwind: "$pairs" },
+        { $group: {
+            _id: "$pairs.k",
+            total: {
+              $sum: {
+                $convert: { input: "$pairs.v", to: "double", onError: 0, onNull: 0 }
+              }
+            }
+          }
+        },
+      ]).session(session);
+
+      console.log(
+        "ACTIVE TOTALS AFTER DELETE:",
+        totals.map(t => [String(t._id), t.total])
       );
-      console.log('estimate adjusted:', pkg.estimateId);
-      res.json({ success: true, estimate });
-    });
+      // 2) ⬆️ END DIAGNOSTIC BLOCK ⬆️
+
+
+
+      // 3) Recompute using SAME session (so agg sees the delete)
+      const estimate = await recomputeEstimateFulfilledOnDelete(
+        {
+          estimateId: String(pkg.estimateId),
+          realmId: String(pkg.realmId),
+        },
+        session
+      );
+
+      // IMPORTANT: make sure recompute returns a resolved doc, e.g. .lean()
+      result = estimate; // capture to send after commit
+    }, { writeConcern: { w: "majority" }, readConcern: { level: "snapshot" } });
+
+    // 4) Now we’re safely committed; send the response
+    return res.json({ success: true, estimate: result });
   } catch (e) {
     console.error(e);
-    res.status(500).send(e.message);
+    const code = e.status || 500;
+    return res.status(code).send(e.message || "Delete failed");
   } finally {
     session.endSession();
   }
 });
+
 
 /**
  * GET /admin/packages

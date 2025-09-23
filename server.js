@@ -21,6 +21,7 @@ import {
   getEstimateDetails,
   saveEstimateInLocalInventory,
   syncUpdatedEstimate,
+  deleteLocalEstimate
 } from './services/estimateService.js';
 import { getItemDetailsFromQB, createOrUpdateItem, deleteItem as deleteLocalItem } from './services/itemService.js';
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
@@ -313,9 +314,9 @@ app.post('/quickbooks/webhook', express.json(), verifyWebhook, async (req, res) 
               await syncUpdatedEstimate(accessToken, realmId, entity.id);
             } else if (entity.operation === 'Delete') {
               // If you want to reverse estimate quantities here, add your handler
-              // await reverseEstimateQuantities(entity.id);
+               await reverseEstimateQuantities(entity.id);
               // Or delete local mirror if required:
-              // await deleteLocalEstimate(entity.id)
+              await deleteLocalEstimate(entity.id, realmId);
             }
           }
 
