@@ -1,4 +1,5 @@
 import axios from 'axios';
+import mongoose from "mongoose";
 import Estimate from '../models/estimate.js'; // Assuming you have an Estimate model defined
 import Package from '../models/package.js';
 import { qbUrl } from '../integrations/quickbooks.js';
