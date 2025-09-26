@@ -1,5 +1,6 @@
 import express from 'express';
 import mongoose from "mongoose";
+import { DateTime } from "luxon";
 import Estimate from '../models/estimate.js';
 import Item from '../models/item.js'; // if you want to decrement stock
 import Package from '../models/package.js';
@@ -11,6 +12,7 @@ import { computeRemainingQuantities, computeRemainingQuantitiesOfEstimate,
     recomputeFulfilledForEstimate,
     recomputeEstimateFulfilledOnDelete
 } from '../services/estimateService.js'; // Adjust import path as needed
+import { nextWeekRange, getWeekRanges, toAddressString  } from "../utils/commonFunctions.js";
 import { requireAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -390,15 +392,169 @@ router.post('/createeeee', async (req, res) => {
  *   driverName?: string
  * }
  */
+// router.post('/create', async (req, res) => {
+//     const {
+//     estimateId,
+//     realmId,
+//     quantities = {},
+//     notes,
+//     packageDate,
+//     shipmentDate,
+//     driverName
+//   } = req.body || {};
+
+//   if (!realmId) {
+//     return res.status(400).json({ success: false, message: 'realmId is required' });
+//   }
+
+//   try {
+//     // 1) Load fresh estimate (DO NOT use .lean() because we may mutate/save)
+//     //const estimate = await Estimate.findOne({ estimateId, realmId });
+//     const estimate = await Estimate
+//   .findOne({ estimateId, realmId });
+  
+
+//     console.log('========================Loaded estimate======================================:', estimate);
+//     if (!estimate) {
+//       return res.status(404).json({ success: false, message: 'Estimate not found' });
+//     }
+
+//     // 2) Build remaining-index that supports lookup by itemId OR by name
+//     const remainingIndex = buildRemainingIndex(estimate);
+
+//     // 3) Iterate user-submitted quantities
+//     const warnings = [];
+//     const packageLines = [];
+
+//     // normalize keys once
+//     const entries = Object.entries(quantities || {});
+//     for (const [rawKey, requestedRaw] of entries) {
+//       const key = String(rawKey ?? '').trim();
+//       const requested = Math.max(0, Number(requestedRaw ?? 0));
+//       if (!key || requested <= 0) continue;
+
+//       // Lookup by exact key; then fallback to case-insensitive name
+//       let entry = remainingIndex.get(key);
+//       if (!entry) {
+//         entry = remainingIndex.get(key.toLowerCase());
+//       }
+//       if (!entry) {
+//         warnings.push(`Item "${key}" not found on estimate; skipping.`);
+//         continue;
+//       }
+
+//       const { lineRef, remaining } = entry;
+//       if (remaining <= 0) {
+//         warnings.push(`Item "${lineRef.name}" is already fully fulfilled; skipping.`);
+//         continue;
+//       }
+
+//       const toPack = Math.min(requested, remaining);
+//       if (requested > remaining) {
+//         warnings.push(`Requested ${requested} of "${lineRef.name}" but only ${remaining} remaining. Packaging ${toPack}.`);
+//       }
+
+//       const rate = Number(lineRef.rate ?? 0);
+//       const amount = rate * toPack;
+
+//       packageLines.push({
+//         itemId: lineRef.itemId ?? lineRef.name,   // ensure a reference
+//         name: lineRef.name,
+//         quantity: toPack,
+//         rate,
+//         amount
+//       });
+
+//       // Update in-memory fulfilled (for snapshot & optional save())
+//       lineRef.fulfilled = Number(lineRef.fulfilled || 0) + toPack;
+//     }
+
+//     if (packageLines.length === 0) {
+//       return res.json({ success: false, message: 'No valid quantities to package', warnings });
+//     }
+
+//     // 4) Atomically persist fulfilled increments to avoid race conditions
+//     const bulkOps = packageLines.map(l => {
+//       // Prefer itemId when present; fallback to name match
+//       const filter = (l.itemId && l.itemId !== l.name)
+//         ? { _id: estimate._id, 'items.itemId': l.itemId }
+//         : { _id: estimate._id, 'items.name': l.name };
+
+//       return {
+//         updateOne: {
+//           filter,
+//           update: { $inc: { 'items.$.fulfilled': l.quantity } }
+//         }
+//       };
+//     });
+
+//     if (bulkOps.length) {
+//       const bulkRes = await Estimate.bulkWrite(bulkOps, { ordered: false });
+//       // Optional: log results to debug
+//       // console.log('Estimate bulkWrite:', bulkRes?.nModified ?? bulkRes?.modifiedCount);
+//     }
+
+//     // 5) (Optional) decrement inventory for each packaged line
+//     //    If you allow negative stock, keep as-is. Otherwise, clamp with an $max pipeline.
+//     for (const l of packageLines) {
+//       await Item.updateOne(
+//         { itemId: l.itemId, realmId },
+//         { $inc: { quantity: -l.quantity }, $set: { updatedAt: new Date() } },
+//         { upsert: true }
+//       );
+//     }
+
+//     // 6) Create Package document with meta (packageDate, shipmentDate, driverName)
+//     const totals = {
+//       lines: packageLines.reduce((n, x) => n + x.quantity, 0),
+//       amount: packageLines.reduce((n, x) => n + (x.amount || 0), 0)
+//     };
+
+//     const pkg = await Package.create({
+//       estimateId,
+//       realmId,
+//       lines: packageLines,
+//       notes,
+//       packageDate: packageDate ? new Date(packageDate) : new Date(),
+//       shipmentDate: shipmentDate ? new Date(shipmentDate) : undefined,
+//       driverName,
+//       totals,
+//       snapshot: {
+//         customerName: estimate.customerName,
+//         txnDate: estimate.txnDate,
+//         billTo: estimate.raw?.BillAddr || null,
+//         shipTo: estimate.raw?.ShipAddr || null,
+//       },
+//       quantities,
+//       status: 'Created' // later: 'Invoiced' after you create a QB invoice
+//       // packageCode is auto-generated in Package model pre('save')
+//     });
+
+//     return res.status(201).json({
+//       success: true,
+//       packageId: String(pkg._id),
+//       packageCode: pkg.packageCode,
+//       estimateId: pkg.estimateId,
+//       totals,
+//       warnings
+//     });
+//   } catch (err) {
+//     console.error('Create package error:', err);
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
 router.post('/create', async (req, res) => {
-    const {
+  const {
     estimateId,
     realmId,
     quantities = {},
     notes,
     packageDate,
     shipmentDate,
-    driverName
+    driverName,
+    // NEW: optional fields coming from the client
+    siteContact = {},           // { name?: string, phone?: string }
+    shippingAddress = ""        // editable multiline string
   } = req.body || {};
 
   if (!realmId) {
@@ -406,36 +562,27 @@ router.post('/create', async (req, res) => {
   }
 
   try {
-    // 1) Load fresh estimate (DO NOT use .lean() because we may mutate/save)
-    //const estimate = await Estimate.findOne({ estimateId, realmId });
-    const estimate = await Estimate
-  .findOne({ estimateId, realmId });
-  
-
+    // 1) Load fresh estimate
+    const estimate = await Estimate.findOne({ estimateId, realmId });
     console.log('========================Loaded estimate======================================:', estimate);
     if (!estimate) {
       return res.status(404).json({ success: false, message: 'Estimate not found' });
     }
 
-    // 2) Build remaining-index that supports lookup by itemId OR by name
+    // 2) Build remaining-index
     const remainingIndex = buildRemainingIndex(estimate);
 
     // 3) Iterate user-submitted quantities
     const warnings = [];
     const packageLines = [];
 
-    // normalize keys once
     const entries = Object.entries(quantities || {});
     for (const [rawKey, requestedRaw] of entries) {
       const key = String(rawKey ?? '').trim();
       const requested = Math.max(0, Number(requestedRaw ?? 0));
       if (!key || requested <= 0) continue;
 
-      // Lookup by exact key; then fallback to case-insensitive name
-      let entry = remainingIndex.get(key);
-      if (!entry) {
-        entry = remainingIndex.get(key.toLowerCase());
-      }
+      let entry = remainingIndex.get(key) || remainingIndex.get(key.toLowerCase());
       if (!entry) {
         warnings.push(`Item "${key}" not found on estimate; skipping.`);
         continue;
@@ -456,14 +603,14 @@ router.post('/create', async (req, res) => {
       const amount = rate * toPack;
 
       packageLines.push({
-        itemId: lineRef.itemId ?? lineRef.name,   // ensure a reference
+        itemId: lineRef.itemId ?? lineRef.name,
         name: lineRef.name,
         quantity: toPack,
         rate,
         amount
       });
 
-      // Update in-memory fulfilled (for snapshot & optional save())
+      // update in-memory fulfilled
       lineRef.fulfilled = Number(lineRef.fulfilled || 0) + toPack;
     }
 
@@ -471,13 +618,11 @@ router.post('/create', async (req, res) => {
       return res.json({ success: false, message: 'No valid quantities to package', warnings });
     }
 
-    // 4) Atomically persist fulfilled increments to avoid race conditions
+    // 4) Atomically persist fulfilled increments
     const bulkOps = packageLines.map(l => {
-      // Prefer itemId when present; fallback to name match
       const filter = (l.itemId && l.itemId !== l.name)
         ? { _id: estimate._id, 'items.itemId': l.itemId }
         : { _id: estimate._id, 'items.name': l.name };
-
       return {
         updateOne: {
           filter,
@@ -487,13 +632,10 @@ router.post('/create', async (req, res) => {
     });
 
     if (bulkOps.length) {
-      const bulkRes = await Estimate.bulkWrite(bulkOps, { ordered: false });
-      // Optional: log results to debug
-      // console.log('Estimate bulkWrite:', bulkRes?.nModified ?? bulkRes?.modifiedCount);
+      await Estimate.bulkWrite(bulkOps, { ordered: false });
     }
 
-    // 5) (Optional) decrement inventory for each packaged line
-    //    If you allow negative stock, keep as-is. Otherwise, clamp with an $max pipeline.
+    // 5) Decrement inventory (optional)
     for (const l of packageLines) {
       await Item.updateOne(
         { itemId: l.itemId, realmId },
@@ -502,11 +644,15 @@ router.post('/create', async (req, res) => {
       );
     }
 
-    // 6) Create Package document with meta (packageDate, shipmentDate, driverName)
+    // 6) Create Package doc (now with siteContact + editable shipping address)
     const totals = {
       lines: packageLines.reduce((n, x) => n + x.quantity, 0),
       amount: packageLines.reduce((n, x) => n + (x.amount || 0), 0)
     };
+
+    const originalShipTo = estimate.raw?.ShipAddr || null;
+    // If client sent an edited string, use it; else derive string from QBO object
+    const shipToString = String(shippingAddress ?? "").trim() || toAddressString(originalShipTo);
 
     const pkg = await Package.create({
       estimateId,
@@ -517,15 +663,23 @@ router.post('/create', async (req, res) => {
       shipmentDate: shipmentDate ? new Date(shipmentDate) : undefined,
       driverName,
       totals,
+      // NEW: persist optional contact + editable address
+      siteContact: {
+        name: (siteContact.name || "").trim(),
+        phone: (siteContact.phone || "").trim()
+      },
+      shippingAddress: shipToString, // a single editable multiline field
+
+      // keep both for audits/printing
       snapshot: {
         customerName: estimate.customerName,
         txnDate: estimate.txnDate,
         billTo: estimate.raw?.BillAddr || null,
-        shipTo: estimate.raw?.ShipAddr || null,
+        shipToOriginal: originalShipTo || null, // NEW: original structured address from QBO
+        shipToString: shipToString               // NEW: the string that will be shown/printed
       },
       quantities,
-      status: 'Created' // later: 'Invoiced' after you create a QB invoice
-      // packageCode is auto-generated in Package model pre('save')
+      status: 'Created'
     });
 
     return res.status(201).json({
@@ -541,6 +695,7 @@ router.post('/create', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 
 /**
  * List packages for an estimate
@@ -575,6 +730,276 @@ router.get('/list/:estimateId/packages', async (req, res) => {
     }
 });
 
+// router.get("/weeks", async (req, res) => {
+//   try {
+//     const realmId = String(req.query.realmId || req.user?.realmId || "").trim();
+//     if (!realmId) return res.status(400).send("Missing realmId");
+
+//     const tz = "America/Vancouver";
+//     const { current, next } = getWeekRanges(tz);
+
+//     const rangeMatch = (fromDT, toDT) => ({
+//       realmId,
+//       shipmentDate: { $gte: fromDT.toJSDate(), $lt: toDT.toJSDate() },
+//     });
+
+//     const groupByDay = [
+//       {
+//         $addFields: {
+//           shipDay: {
+//             $dateToString: { format: "%Y-%m-%d", date: "$shipmentDate", timezone: tz },
+//           },
+//         },
+//       },
+//       { $sort: { shipmentDate: 1, createdAt: 1 } },
+//       {
+//         $group: {
+//           _id: "$shipDay",
+//           count: { $sum: 1 },
+//           packages: {
+//             $push: {
+//               _id: "$_id",
+//               packageCode: "$packageCode",
+//               estimateId: "$estimateId",
+//               docNumber: "$docNumber",
+//               customerName: "$customerName",
+//               shipmentDate: "$shipmentDate",
+//               status: "$status",
+//               totals: "$totals",
+//               notes: "$notes",
+//             },
+//           },
+//         },
+//       },
+//       { $project: { _id: 0, shipDay: "$shipDay", count: 1, packages: 1 } },
+//       { $sort: { shipDay: 1 } },
+//     ];
+
+//     const [result] = await Package.aggregate([
+//       {
+//         $facet: {
+//           current: [{ $match: rangeMatch(current.from, current.to) }, ...groupByDay],
+//           next:    [{ $match: rangeMatch(next.from, next.to) },       ...groupByDay],
+//         },
+//       },
+//     ]);
+
+//     const total = (arr) => arr.reduce((s, g) => s + (g?.count || 0), 0);
+
+//     res.json({
+//       current: {
+//         range: { from: current.from.toISODate(), to: current.to.toISODate() }, // [from, to)
+//         grouped: result.current,
+//         total: total(result.current),
+//       },
+//       next: {
+//         range: { from: next.from.toISODate(), to: next.to.toISODate() },
+//         grouped: result.next,
+//         total: total(result.next),
+//       },
+//     });
+//   } catch (err) {
+//     console.error("weeks endpoint error:", err);
+//     res.status(500).send("Failed to load weekly packages");
+//   }
+// });
+
+router.get("/weeks", async (req, res) => {
+  try {
+    const realmId = String(req.query.realmId || req.user?.realmId || "").trim();
+    if (!realmId) return res.status(400).send("Missing realmId");
+
+    const tz = "America/Vancouver";
+    const { current, next } = getWeekRanges(tz);
+
+    const base = (fromDT, toDT) => ([
+      { $match: { realmId, shipmentDate: { $gte: fromDT.toJSDate(), $lt: toDT.toJSDate() } } },
+
+      // 🔎 Pull customerName & DocNumber from Estimate (match by realmId + estimateId)
+      {
+        $lookup: {
+          from: "estimates",
+          let: { eId: "$estimateId", rId: "$realmId" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+              { $eq: ["$estimateId", "$$eId"] },
+              { $eq: ["$realmId",   "$$rId"] },
+            ] } } },
+            { $project: {
+              _id: 0,
+              customerName: 1,
+              docNumber: 1,
+              rawDocNumber: "$raw.DocNumber", // in case you only stored it in raw
+            } }
+          ],
+          as: "est"
+        }
+      },
+      { $addFields: { est: { $first: "$est" } } },
+
+      // ✅ Resolved fields with sensible fallbacks
+      { $addFields: {
+          customerNameResolved: {
+            $ifNull: [
+              "$est.customerName",
+              { $ifNull: ["$snapshot.customerName", "$customerName"] }
+            ]
+          },
+          docNumberResolved: {
+            $ifNull: [
+              "$est.docNumber",
+              { $ifNull: ["$est.rawDocNumber", "$docNumber"] }
+            ]
+          },
+          shipDay: {
+            $dateToString: { format: "%Y-%m-%d", date: "$shipmentDate", timezone: tz }
+          }
+        }
+      },
+
+      { $sort: { shipmentDate: 1, createdAt: 1 } },
+      {
+        $group: {
+          _id: "$shipDay",
+          count: { $sum: 1 },
+          packages: {
+            $push: {
+              _id: "$_id",
+              packageCode: "$packageCode",
+              estimateId: "$estimateId",
+              docNumber: "$docNumberResolved",     // 👈 from Estimate
+              customerName: "$customerNameResolved", // 👈 from Estimate
+              shipmentDate: "$shipmentDate",
+              status: "$status",
+              totals: "$totals",
+              notes: "$notes",
+            }
+          }
+        }
+      },
+      { $project: { _id: 0, shipDay: "$_id", count: 1, packages: 1 } },
+      { $sort: { shipDay: 1 } },
+    ]);
+
+    const [result] = await Package.aggregate([
+      { $facet: {
+          current: base(current.from, current.to),
+          next:    base(next.from,    next.to),
+        }
+      }
+    ]);
+
+    const sum = (a) => a.reduce((s, g) => s + (g.count || 0), 0);
+
+    res.json({
+      current: {
+        range: { from: current.from.toISODate(), to: current.to.toISODate() },
+        grouped: result.current,
+        total: sum(result.current),
+      },
+      next: {
+        range: { from: next.from.toISODate(), to: next.to.toISODate() },
+        grouped: result.next,
+        total: sum(result.next),
+      },
+    });
+  } catch (err) {
+    console.error("weeks endpoint error:", err);
+    res.status(500).send("Failed to load weekly packages");
+  }
+});
+
+router.get("/upcoming", async (req, res) => {
+  try {
+    const realmId = String(req.query.realmId || req.user?.realmId || "").trim();
+    if (!realmId) return res.status(400).send("Missing realmId");
+
+    const tz = "America/Vancouver";
+
+    // Optional override via query (?from=YYYY-MM-DD&to=YYYY-MM-DD)
+    let from, to;
+    if (req.query.from && req.query.to) {
+      from = new Date(`${req.query.from}T00:00:00-07:00`); // handled by PST/PDT offset at runtime
+      to   = new Date(`${req.query.to}T00:00:00-07:00`);
+    } else {
+      const r = nextWeekRange(tz);
+      from = r.from.toJSDate();
+      to   = r.to.toJSDate();
+    }
+
+
+    console.log('From Date:'+ from);
+    // Some of your docs may store shipmentDate as an ISO string "YYYY-MM-DD".
+    // This $or handles both Date and string storage safely.
+    const match = {
+      realmId,
+      $or: [
+        { shipmentDate: { $gte: from, $lt: to } },                 // if Date type
+        { shipmentDate: { $type: "string", $regex: /^\d{4}-\d{2}-\d{2}$/ } }, // strings
+      ],
+    };
+
+    // If you have mixed types, we’ll match strings by converting the from/to into YYYY-MM-DD:
+    const toYMD = (d) => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+    const fromY = toYMD(from);
+    const toY   = toYMD(to);
+
+    const pipeline = [
+      { $match: {
+          realmId,
+          $or: [
+            { shipmentDate: { $gte: from, $lt: to } },                        // Date
+            { $and: [                                                         // String: "YYYY-MM-DD"
+                { shipmentDate: { $type: "string" } },
+                { shipmentDate: { $gte: fromY, $lt: toY } },
+            ]},
+          ],
+        }
+      },
+      // Normalize to YYYY-MM-DD in Vancouver time
+      { $addFields: {
+          shipDay: {
+            $cond: [
+              { $eq: [{ $type: "$shipmentDate" }, "date"] },
+              { $dateToString: { format: "%Y-%m-%d", date: "$shipmentDate", timezone: tz } },
+              "$shipmentDate"
+            ]
+          }
+        }
+      },
+      { $sort: { shipDay: 1, createdAt: 1 } },
+      { $group: {
+          _id: "$shipDay",
+          count: { $sum: 1 },
+          packages: { $push: {
+            _id: "$_id",
+            packageCode: "$packageCode",
+            estimateId: "$estimateId",
+            customerName: "$customerName",
+            shipmentDate: "$shipmentDate",
+            notes: "$notes",
+            totals: "$totals", // whatever you store (e.g., total items)
+          } }
+        }
+      },
+      { $sort: { _id: 1 } },
+      { $project: { shipDay: "$_id", _id: 0, count: 1, packages: 1 } },
+    ];
+
+    console.log(pipeline);
+
+    const grouped = await Package.aggregate(pipeline);
+
+    // Also return the absolute range so the UI can show it
+    res.json({
+      range: { from: fromY, to: toY }, // [from, to)
+      grouped,                         // [{ shipDay, count, packages: [...] }, ...]
+    });
+  } catch (err) {
+    console.error("Upcoming packages error:", err);
+    res.status(500).send("Failed to load upcoming packages");
+  }
+});
 
 // router.get('/:id', async (req, res) => {
 //   try {
@@ -654,48 +1079,118 @@ router.get("/:id", requireAdmin, async (req, res) => {
     lines: Object.values(lineByKey), // normalized too (optional)
     createdAt: pkg.createdAt,
     updatedAt: pkg.updatedAt,
+    siteContact: pkg.siteContact || {},       // { name, phone }
     //quantities: pkg.quantities,
   });
 });
 
 // server/routes/packages.js
+// router.put("/:id", requireAdmin, async (req, res) => {
+//   try {
+//     const pkg = await Package.findById(req.params.id);
+//     if (!pkg) return res.status(404).send("Not found");
+
+//     const { shipmentDate, driverName, notes, siteContact, shippingAddress } = req.body;
+
+//     // 1) clean incoming quantities
+//     const cleaned = Object.fromEntries(
+//       Object.entries(req.body.quantities || {})
+//         .filter(([k]) => k && k !== "undefined")
+//         .map(([k, v]) => [String(k), Number(v || 0)])
+//     );
+//    console.log(`Updating package ${pkg._id} with quantities:`, cleaned);
+//     // 2) assign fields
+//     if (shipmentDate !== undefined) pkg.shipmentDate = shipmentDate;
+//     if (driverName !== undefined) pkg.driverName = driverName;
+//     if (notes !== undefined) pkg.notes = notes;
+
+//     // 3) **replace** the whole quantities object (no .set)
+//     pkg.set("quantities", cleaned);    // ✅ works for Map or Object types
+
+//     // If your schema uses plain Object, uncomment the next line in case Mongoose misses changes:
+//     // pkg.markModified("quantities");
+
+//     await pkg.save();
+
+//     console.log(`Package ${pkg._id} updated successfully`);
+
+//     // (optional) if you recompute estimate fulfillment:
+//     await recomputeEstimateFulfilled({ estimateId: pkg.estimateId, realmId: pkg.realmId });
+
+//     res.json({ ok: true, id: pkg._id });
+//   } catch (e) {
+//     res.status(500).send(e.message || "Error");
+//   }
+// });
+
 router.put("/:id", requireAdmin, async (req, res) => {
   try {
     const pkg = await Package.findById(req.params.id);
     if (!pkg) return res.status(404).send("Not found");
 
-    const { shipmentDate, driverName, notes } = req.body;
+    const {
+      shipmentDate,
+      driverName,
+      notes,
+      siteContact,        // { name?: string, phone?: string }
+      shippingAddress,    // string (multiline)
+      quantities
+    } = req.body || {};
 
-    // 1) clean incoming quantities
+    // 1) Clean incoming quantities (replace whole map)
     const cleaned = Object.fromEntries(
-      Object.entries(req.body.quantities || {})
+      Object.entries(quantities || {})
         .filter(([k]) => k && k !== "undefined")
         .map(([k, v]) => [String(k), Number(v || 0)])
     );
-   console.log(`Updating package ${pkg._id} with quantities:`, cleaned);
-    // 2) assign fields
-    if (shipmentDate !== undefined) pkg.shipmentDate = shipmentDate;
+    console.log(`Updating package ${pkg._id} with quantities:`, cleaned);
+
+    // 2) Assign simple fields
+    if (shipmentDate !== undefined) {
+      // allow clearing by passing empty string/undefined
+      pkg.shipmentDate = shipmentDate ? new Date(shipmentDate) : undefined;
+    }
     if (driverName !== undefined) pkg.driverName = driverName;
     if (notes !== undefined) pkg.notes = notes;
 
-    // 3) **replace** the whole quantities object (no .set)
-    pkg.set("quantities", cleaned);    // ✅ works for Map or Object types
+    // 3) Optional: siteContact (both fields optional)
+    if (siteContact !== undefined) {
+      pkg.siteContact = {
+        name: (siteContact?.name ?? "").trim(),
+        phone: (siteContact?.phone ?? "").trim(),
+      };
+      // If you want to validate phone server-side, do it here (optional)
+      // if (pkg.siteContact.phone && !/^[0-9+()\-\s]{7,}$/.test(pkg.siteContact.phone)) {
+      //   return res.status(400).send("Invalid phone format.");
+      // }
+    }
 
-    // If your schema uses plain Object, uncomment the next line in case Mongoose misses changes:
+    // 4) Optional: editable shipping address (and keep printable snapshot in sync)
+    if (shippingAddress !== undefined) {
+      pkg.shippingAddress = String(shippingAddress || "");
+      pkg.snapshot = pkg.snapshot || {};
+      pkg.snapshot.shipToString = pkg.shippingAddress; // keep printable in sync
+      // NOTE: don't touch snapshot.shipToOriginal (keep original QBO address)
+    }
+
+    // 5) Replace the whole quantities object (works for Map or Object types)
+    pkg.set("quantities", cleaned);
+    // If your schema uses plain object for quantities, uncomment:
     // pkg.markModified("quantities");
 
     await pkg.save();
-
     console.log(`Package ${pkg._id} updated successfully`);
 
-    // (optional) if you recompute estimate fulfillment:
+    // Keep estimate.fulfilled in sync with total packages
     await recomputeEstimateFulfilled({ estimateId: pkg.estimateId, realmId: pkg.realmId });
 
     res.json({ ok: true, id: pkg._id });
   } catch (e) {
+    console.error("PUT /admin/packages/:id error:", e);
     res.status(500).send(e.message || "Error");
   }
 });
+
 
 // router.delete("/:id", async (req, res) => {
 //   const session = await mongoose.startSession();
@@ -884,5 +1379,8 @@ router.delete("/:id", async (req, res) => {
 //     res.status(500).send(e.message || "Error");
 //   }
 // });
+
+
+
 
 export default router;

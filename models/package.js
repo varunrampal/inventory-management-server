@@ -21,7 +21,11 @@ const pkgSchema = new mongoose.Schema({
   driverName: { type: String },
   packageCode: { type: String, unique: true },
   quantities: { type: Map, of: Number, default: {} },
-
+  siteContact: {
+    name: { type: String, default: "" },
+    phone: { type: String, default: "" }
+  },
+  shippingAddress: { type: String, default: "" },
   totals: {
     lines: { type: Number, default: 0 },
     amount: { type: Number, default: 0 }
@@ -31,7 +35,9 @@ const pkgSchema = new mongoose.Schema({
     txnDate: Date,
     totalAmount: Number,
     billTo: mongoose.Schema.Types.Mixed, // store as object or string
-    shipTo: mongoose.Schema.Types.Mixed
+    shipTo: mongoose.Schema.Types.Mixed,
+    shipToOriginal: mongoose.Schema.Types.Mixed, 
+    shipToString: { type: String, default: "" }
   },
   status: {
     type: String,
