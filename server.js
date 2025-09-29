@@ -174,6 +174,30 @@ app.get('/admin/inventory/lowstock/:realmId', requireAdmin, async (req, res) => 
   }
 });
 
+/**
+ * GET /inventory/low-stock?realmId=...&limit=5
+ */
+app.get("/inventory/lowstock/widget", async (req, res) => {
+  try {
+    const { realmId, limit = 5, threshold = 10 } = req.query;
+    if (!realmId) return res.status(400).json({ error: "realmId required" });
+
+    const items = await Item.find({
+      realmId,
+      quantity: { $lte: Number(threshold) },
+    })
+      .sort({ quantity: 1 })
+      .limit(Number(limit))
+      .select({ _id: 1, name: 1, sku: 1, quantity: 1 })
+      .lean();
+
+    res.json({ items });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Full inventory via raw driver (kept for compatibility)
 app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
   try {

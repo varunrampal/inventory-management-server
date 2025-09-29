@@ -1001,6 +1001,108 @@ router.get("/upcoming", async (req, res) => {
   }
 });
 
+router.get("/calendar", async (req, res) => {
+  try {
+    
+    const realmId = String(req.query.realmId || "").trim();
+    const timeMin = req.query.timeMin; // ISO
+    const timeMax = req.query.timeMax; // ISO
+    if (!realmId || !timeMin || !timeMax) {
+      return res.status(400).send("Missing realmId/timeMin/timeMax");
+    }
+
+    const from = new Date(timeMin);
+    const to   = new Date(timeMax);
+
+    // Pull related estimate fields if needed
+   const TZ = "America/Vancouver";
+
+const docs = await Package.aggregate([
+  { $match: { realmId, shipmentDate: { $gte: from, $lt: to } } },
+
+  {
+    $lookup: {
+      from: "estimates",
+      let: { eId: "$estimateId", rId: "$realmId" },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: ["$estimateId", "$$eId"] },
+                { $eq: ["$realmId",   "$$rId"] },
+              ]
+            }
+          }
+        },
+        { $project: { _id: 0, customerName: 1, docNumber: 1, rawDocNumber: "$raw.DocNumber" } },
+      ],
+      as: "est",
+    }
+  },
+  { $addFields: { est: { $first: "$est" } } },
+
+  // 🔧 Normalize shipmentDate to a Vancouver-local midnight when it was saved as 00:00:00Z
+  { $addFields: {
+      _utcTime: { $dateToString: { format: "%H:%M:%S", date: "$shipmentDate", timezone: "UTC" } },
+      _utcYMD:  { $dateToString: { format: "%Y-%m-%d", date: "$shipmentDate", timezone: "UTC" } },
+    }
+  },
+  { $addFields: {
+      _shipLocal: {
+        $cond: [
+          { $eq: ["$_utcTime", "00:00:00"] }, // if saved as exactly midnight UTC, reinterpret
+          { $dateFromString: { dateString: "$_utcYMD", timezone: TZ } }, // Vancouver 00:00 of that Y-M-D
+          "$shipmentDate" // else keep the original instant
+        ]
+      }
+    }
+  },
+
+  // ✅ Final fields + the Y-M-D string for FullCalendar all-day events
+  {
+    $addFields: {
+      customerName: {
+        $ifNull: ["$est.customerName", { $ifNull: ["$snapshot.customerName", "$customerName"] }]
+      },
+      docNumber: {
+        $ifNull: ["$est.docNumber", { $ifNull: ["$est.rawDocNumber", "$docNumber"] }]
+      },
+      shipDay: {
+        $dateToString: { format: "%Y-%m-%d", date: "$_shipLocal", timezone: TZ }
+      }
+    }
+  },
+
+  { $project: {
+      _id: 1, packageCode: 1, estimateId: 1, customerName: 1, docNumber: 1, status: 1, shipDay: 1
+    }
+  },
+]);
+
+
+    const events = docs.map(d => ({
+      id: String(d._id),
+      title: `${d.packageCode || d._id} • ${d.customerName || "—"}`,
+      start: d.shipDay,     // YYYY-MM-DD -> all-day
+      allDay: true,
+      extendedProps: {
+        packageCode: d.packageCode,
+        customerName: d.customerName,
+        docNumber: d.docNumber,
+        estimateId: d.estimateId,
+        status: d.status,
+        shipDay: d.shipDay,
+      }
+    }));
+
+    res.json(events);
+  } catch (err) {
+    console.error("calendar error:", err);
+    res.status(500).send("Failed to load calendar");
+  }
+});
+
 // router.get('/:id', async (req, res) => {
 //   try {
 //     const pkg = await Package.findById(req.params.id).lean();
