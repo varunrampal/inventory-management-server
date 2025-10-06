@@ -35,6 +35,8 @@ import authRoutes from './routes/authRoutes.js';
 import packageRoutes from './routes/packagesRoute.js';
 import qbRoutes from "./routes/qb.routes.js";
 import pottingListRoute from './routes/pottingListRoute.js';
+import employeesRouter from "./routes/employeesRouter.js";
+import timesheetsRouter from "./routes/timesheetsRoutes.js";
 import db from './db.js';
 
 dotenv.config();
@@ -123,6 +125,8 @@ app.use('/admin/estimates', estimateRoutes);
 app.use('/admin/packages', packageRoutes);
 app.use('/admin/sync', adminRoutes);
 app.use('/admin/pottinglists', pottingListRoute);
+app.use("/admin/employees", employeesRouter);
+app.use("/admin/timesheets", timesheetsRouter);
 app.use('/auth', authRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
