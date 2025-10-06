@@ -435,64 +435,119 @@ router.get("/report/by-size", async (req, res) => {
       return res.status(400).json({ error: "realmId is required" });
     }
 
-    const { year, season, customer, top = 50, sort = "totalDesc" } = req.query;
+    const { year, season, customer, sort = "totalDesc" } = req.query;
 
-    const match = { realmId };
-    if (year)   match.year = Number(year);
-    if (season) match.season = season;
-    if (customer?.trim()) {
-      match.customerName = { $regex: customer.trim(), $options: "i" };
+const rawTop = Array.isArray(req.query.top) ? req.query.top[0] : req.query.top;
+
+let top = parseInt(rawTop, 10);
+if (!Number.isFinite(top) || top <= 0) top = 50;   // default
+top = Math.min(top, 10000);   
+
+// Accept size, sizes, or size[]
+const rawSizes =
+  req.query.size ??
+  req.query.sizes ??
+  req.query["size[]"];
+
+let sizeList = [];
+if (Array.isArray(rawSizes)) {
+  sizeList = rawSizes.flatMap(s => String(s).split(","));
+} else if (rawSizes) {
+  sizeList = String(rawSizes).split(",");
+}
+sizeList = [...new Set(sizeList.map(s => s.trim()).filter(Boolean))];
+
+
+// Base filters
+const match = { realmId };
+if (req.query.year)   match.year   = Number(req.query.year);
+if (req.query.season) match.season = req.query.season;
+if (req.query.customer?.trim()) {
+  match.customerName = { $regex: req.query.customer.trim(), $options: "i" };
+}
+
+// === The pipeline ===
+const pipeline = [
+  // Tenant + main filters
+  { $match: match },
+
+  // Optional coarse pre-filter on embedded size for index usage
+  ...(sizeList.length ? [{ $match: { "items.size": { $in: sizeList } } }] : []),
+
+  // One row per item
+  { $unwind: "$items" },
+
+  // Normalize fields (no default "Unnamed/Unknown"), cast quantity safely
+  {
+    $set: {
+      _size: { $trim: { input: { $ifNull: ["$items.size", ""] } } },
+      _name: { $trim: { input: { $ifNull: ["$items.name", ""] } } },
+      _q: {
+        $convert: {
+          input: "$items.quantity", to: "double",
+          onError: 0, onNull: 0
+        }
+      }
     }
+  },
 
-    const pipeline = [
-      { $match: match },
-      { $unwind: "$items" },
-
-      // normalize fields and guard nulls/strings
-      {
-        $set: {
-          "items.size": { $ifNull: [{ $trim: { input: "$items.size" } }, "Unknown"] },
-          "items.name": { $ifNull: [{ $trim: { input: "$items.name" } }, "Unnamed item"] },
-          _q: { $toDouble: { $ifNull: ["$items.quantity", 0] } },
-        }
+  // Exclude blank/placeholder names and (optionally) filter sizes after normalization
+  {
+    $match: {
+      $expr: {
+        $and: [
+          { $gt: [ { $strLenCP: "$_name" }, 0 ] },
+          { $not: { $regexMatch: { input: "$_name", regex: "^(unnamed|unknown)\\b", options: "i" } } }
+        ]
       },
+      ...(sizeList.length ? { _size: { $in: sizeList } } : {})
+    }
+  },
 
-      // Sum per (size, name)
-      {
-        $group: {
-          _id: { size: "$items.size", name: "$items.name" },
-          totalQty: { $sum: "$_q" },
+  // Sum per (size, name)
+  {
+    $group: {
+      _id: { size: "$_size", name: "$_name" },
+      totalQty: { $sum: "$_q" }
+    }
+  },
+
+  // Order items within each size (desc qty), stabilise by name
+  { $sort: { "_id.size": 1, totalQty: -1, "_id.name": 1 } },
+
+  // Regroup by size: compute size total + ordered items
+  {
+    $group: {
+      _id: "$_id.size",
+      sizeTotal: { $sum: "$totalQty" },
+      items: {
+        $push: {
+          name: "$_id.name",
+          size: "$_id.size",
+          totalQty: { $round: ["$totalQty", 2] }
         }
-      },
+      }
+    }
+  },
 
-      // Sort items within size before regrouping (so push keeps order)
-      { $sort: { "_id.size": 1, totalQty: -1, "_id.name": 1 } },
+  // Top-N items per size and final shape
+  {
+    $project: {
+      _id: 0,
+      size: "$_id",
+      sizeTotal: { $round: ["$sizeTotal", 2] },
+      items: { $slice: ["$items", top] }
+    }
+  },
 
-      // Regroup by size to get size total + ordered items list
-      {
-        $group: {
-          _id: "$_id.size",
-          sizeTotal: { $sum: "$totalQty" },
-          items: {
-            $push: {
-              name: "$_id.name",
-              size: "$_id.size",
-              totalQty: "$totalQty",
-            }
-          }
-        }
-      },
+  // Final sort of size groups
+  ...(sort === "size"
+    ? [{ $sort: { size: 1 } }]
+    : sort === "totalAsc"
+    ? [{ $sort: { sizeTotal: 1 } }]
+    : [{ $sort: { sizeTotal: -1 } }])
+];
 
-      // Optional top N per size
-      {
-        $project: {
-          _id: 0,
-          size: "$_id",
-          sizeTotal: 1,
-          items: { $slice: ["$items", { $toInt: top }] }
-        }
-      },
-    ];
 
     // final sort of size groups
     if (sort === "size") {
