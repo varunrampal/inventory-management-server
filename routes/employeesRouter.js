@@ -1,5 +1,7 @@
 import { Router } from "express";
 import Employee from "../models/employee.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allowedEmployeeIds } from "../services/supervisorService.js";
 
 
 const r = Router();
@@ -16,13 +18,20 @@ res.status(201).json(doc);
 
 
 // List
-r.get("/", async (req, res) => {
+r.get("/", requireAuth, requireRole("supervisor","manager","admin"), async (req, res) => {
 const { realmId, q, active } = req.query;
 const filter = {};
 if (realmId) filter.realmId = realmId;
 //if (active !== undefined) filter.isActive = active === "true";
 filter.isActive = true;
 if (q) filter.name = { $regex: q, $options: "i" };
+
+ const roles = req.user.roles || [];
+  if (!roles.includes("admin") && !roles.includes("manager")) {
+    const allowed = await allowedEmployeeIds(req);
+    if (Array.isArray(allowed)) filter._id = { $in: allowed };
+  }
+
 const docs = await Employee.find(filter).sort({ name: 1 }).lean();
 res.json(docs);
 });

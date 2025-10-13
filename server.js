@@ -2,7 +2,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
-import axios from 'axios';
+import axios, { all } from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
@@ -27,7 +27,8 @@ import { getItemDetailsFromQB, createOrUpdateItem, deleteItem as deleteLocalItem
 import { saveTokenToMongo, getValidAccessToken } from './token.js';
 import { getInvoiceDetails } from './quickbooksClient.js';
 import Item from './models/item.js';
-import { requireAdmin } from './middleware/auth.js';
+import User from "./models/User.js";
+import { requireAdmin, issueToken } from './middleware/auth.js';
 import itemRoutes from './routes/items.js';
 import estimateRoutes from './routes/estimates.js';
 import adminRoutes from './routes/adminRoutes.js';
@@ -37,6 +38,8 @@ import qbRoutes from "./routes/qb.routes.js";
 import pottingListRoute from './routes/pottingListRoute.js';
 import employeesRouter from "./routes/employeesRouter.js";
 import timesheetsRouter from "./routes/timesheetsRoutes.js";
+import allotmentsRouter from "./routes/allotmentsRoute.js";
+import usersRouter from "./routes/usersRoute.js";
 import db from './db.js';
 
 dotenv.config();
@@ -126,7 +129,9 @@ app.use('/admin/packages', packageRoutes);
 app.use('/admin/sync', adminRoutes);
 app.use('/admin/pottinglists', pottingListRoute);
 app.use("/admin/employees", employeesRouter);
+app.use("/admin/users", usersRouter);
 app.use("/admin/timesheets", timesheetsRouter);
+app.use("/admin/allotments", allotmentsRouter); 
 app.use('/auth', authRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
@@ -142,6 +147,16 @@ app.post('/admin/login', async (req, res) => {
     console.error('Login error:', e);
     return res.status(500).json({ error: 'Server error' });
   }
+});
+
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
+  const u = await User.findOne({ email });
+  if (!u || !u.isActive) return res.status(401).json({ error: "Invalid credentials" });
+  const ok = await bcrypt.compare(password, u.passwordHash);
+  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+  const token = issueToken({ userId: u._id, roles: u.roles, realmId: u.realmId, employeeId: u.employeeId });
+  res.json({ token, user: { _id: u._id, name: u.name, email: u.email, roles: u.roles, realmId: u.realmId, employeeId: u.employeeId } });
 });
 
 /* ------------------------- Admin auth check (JWT) -------------------- */

@@ -1,13 +1,21 @@
 import { Router } from "express";
 import TimesheetEntry from "../models/TimesheetEntry.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+import { allowedEmployeeIds } from "../services/supervisorService.js";
 
 const r = Router();
 
 
 // Upsert a single day entry for an employee
-r.post("/upsert", async (req, res) => {
+r.post("/upsert", requireAuth, requireRole("supervisor"), async (req, res) => {
 try {
 const { realmId, employeeId, date, hours, note } = req.body;
+
+const allowed = await allowedEmployeeIds(req);
+  if (Array.isArray(allowed) && !allowed.includes(String(employeeId))) {
+    return res.status(403).json({ error: "Not allotted to supervisor" });
+  }
+
 const d = new Date(date);
 const doc = await TimesheetEntry.findOneAndUpdate(
 { realmId, employeeId, date: d },
