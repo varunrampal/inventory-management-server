@@ -40,6 +40,7 @@ import employeesRouter from "./routes/employeesRouter.js";
 import timesheetsRouter from "./routes/timesheetsRoutes.js";
 import allotmentsRouter from "./routes/allotmentsRoute.js";
 import usersRouter from "./routes/usersRoute.js";
+import adminPayroll from "./routes/adminPayroll.js";
 import db from './db.js';
 
 dotenv.config();
@@ -131,7 +132,8 @@ app.use('/admin/pottinglists', pottingListRoute);
 app.use("/admin/employees", employeesRouter);
 app.use("/admin/users", usersRouter);
 app.use("/admin/timesheets", timesheetsRouter);
-app.use("/admin/allotments", allotmentsRouter); 
+app.use("/admin/allotments", allotmentsRouter);
+app.use("/admin/payroll", adminPayroll);
 app.use('/auth', authRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
