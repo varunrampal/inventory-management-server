@@ -97,7 +97,7 @@ app.set('trust proxy', 1); // if behind a proxy (Render/NGINX/etc.)
 
 app.use(cors(corsOptions));
 // Make sure preflights never hit auth/other middleware
-app.options("*", cors(corsOptions));
+// app.options("/:path(*)", cors(corsOptions));  
 app.use(cookieParser());
 // Cap payload size to prevent abuse
 app.use(express.json({ limit: '1mb' }));
