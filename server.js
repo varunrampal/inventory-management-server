@@ -41,6 +41,7 @@ import timesheetsRouter from "./routes/timesheetsRoutes.js";
 import allotmentsRouter from "./routes/allotmentsRoute.js";
 import usersRouter from "./routes/usersRoute.js";
 import adminPayroll from "./routes/adminPayroll.js";
+import cashEntriesRouter from "./routes/cashEntriesRoutes.js";
 import db from './db.js';
 
 dotenv.config();
@@ -134,6 +135,7 @@ app.use("/admin/users", usersRouter);
 app.use("/admin/timesheets", timesheetsRouter);
 app.use("/admin/allotments", allotmentsRouter);
 app.use("/admin/payroll", adminPayroll);
+app.use("/admin/cashentries", cashEntriesRouter); 
 app.use('/auth', authRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
@@ -224,6 +226,8 @@ app.get("/inventory/lowstock/widget", async (req, res) => {
 // Full inventory via raw driver (kept for compatibility)
 app.get('/admin/inventory/:realmId', requireAdmin, async (req, res) => {
   try {
+
+    console.log("Fetching inventory for realmId:", req.params.realmId);
     const { realmId } = req.params;
     const items = await db.connect().then(conn => conn.collection('items').find({ realmId }).toArray());
     res.json(items);

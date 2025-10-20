@@ -24,7 +24,9 @@ export const requireAdmin = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    if (decoded.role === 'admin') return next();
+    console.log(decoded);
+   // if (decoded.role === 'admin') return next();
+   if (decoded.roles[0] === 'admin') return next();
     return res.status(403).json({ error: 'Forbidden' });
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
