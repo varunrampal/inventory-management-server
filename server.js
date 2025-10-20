@@ -10,7 +10,7 @@ import bcrypt from 'bcrypt';
 import cookieParser from 'cookie-parser';
 import { ObjectId } from 'mongodb';
 import mongoose from 'mongoose';
-import { corsMiddleware } from "./cors.js";
+
 // Your project modules
 import { verifyWebhook } from './webhookHandler.js';
 import { syncInvoiceToInventory } from './syncInvoice.js';
