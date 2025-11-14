@@ -42,6 +42,7 @@ import allotmentsRouter from "./routes/allotmentsRoute.js";
 import usersRouter from "./routes/usersRoute.js";
 import adminPayroll from "./routes/adminPayroll.js";
 import cashEntriesRouter from "./routes/cashEntriesRoutes.js";
+import trackingRoutes from "./routes/trackingRoutes.js";
 import db from './db.js';
 
 dotenv.config();
@@ -139,6 +140,7 @@ app.use("/admin/allotments", allotmentsRouter);
 app.use("/admin/payroll", adminPayroll);
 app.use("/admin/cashentries", cashEntriesRouter); 
 app.use('/auth', authRoutes);
+app.use("/admin/tracking", trackingRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
 app.post('/admin/login', async (req, res) => {
@@ -408,6 +410,12 @@ app.use((err, req, res, _next) => {
 
 
 /* ------------------------------ START ------------------------------- */
-app.listen(PORT, () => {
-  console.log(`🚀 Server up on http://localhost:${PORT} (env=${QUICKBOOKS_ENV}, QB=${QUICKBOOKS_ENV}), URI=${REDIRECT_URI}`);
+// app.listen(PORT, () => {
+//   console.log(`🚀 Server up on http://localhost:${PORT} (env=${QUICKBOOKS_ENV}, QB=${QUICKBOOKS_ENV}), URI=${REDIRECT_URI}`);
+// });
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `🚀 Server up on 0.0.0.0:${PORT} (env=${QUICKBOOKS_ENV}, QB=${QUICKBOOKS_ENV}), URI=${REDIRECT_URI}`
+  );
 });
