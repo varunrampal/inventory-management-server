@@ -66,6 +66,29 @@ router.post("/update", async (req, res) => {
   }
 });
 
+// WEBSITE → full path for one driver (last X minutes)
+router.get("/history/:driverId", async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const minutes = Number(req.query.minutes || 60); // default last 60 mins
+
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+
+    //{ $gte: since },
+    const points = await DriverLocationHistory.find({
+      driverId,
+      timestamp: 1,
+    })
+      .sort({ timestamp: 1 }) // oldest → newest
+      .lean();
+
+    res.json(points);
+  } catch (err) {
+    console.error("Get history error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // WEBSITE → get all driver locations
 router.get("/", async (_req, res) => {
   try {
@@ -87,30 +110,6 @@ router.get("/:driverId", async (req, res) => {
     res.json(doc);
   } catch (err) {
     console.error("Get location error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// in routes/adminTrackingRoutes.js
-
-// WEBSITE → full path for one driver (last X minutes)
-router.get("/history/:driverId", async (req, res) => {
-  try {
-    const { driverId } = req.params;
-    const minutes = Number(req.query.minutes || 60); // default last 60 mins
-
-    const since = new Date(Date.now() - minutes * 60 * 1000);
-
-    const points = await DriverLocationHistory.find({
-      driverId,
-      timestamp: { $gte: since },
-    })
-      .sort({ timestamp: 1 }) // oldest → newest
-      .lean();
-
-    res.json(points);
-  } catch (err) {
-    console.error("Get history error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
