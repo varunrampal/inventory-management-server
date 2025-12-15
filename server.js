@@ -43,6 +43,7 @@ import usersRouter from "./routes/usersRoute.js";
 import adminPayroll from "./routes/adminPayroll.js";
 import cashEntriesRouter from "./routes/cashEntriesRoutes.js";
 import trackingRoutes from "./routes/trackingRoutes.js";
+import paymentRoutes  from "./routes/paymentRoutes.js";
 import db from './db.js';
 
 dotenv.config();
@@ -141,6 +142,7 @@ app.use("/admin/payroll", adminPayroll);
 app.use("/admin/cashentries", cashEntriesRouter); 
 app.use('/auth', authRoutes);
 app.use("/admin/tracking", trackingRoutes);
+app.use("/admin/payments", paymentRoutes);
 
 /* -------- Admin login (Bearer token response; front-end stores it) --- */
 app.post('/admin/login', async (req, res) => {

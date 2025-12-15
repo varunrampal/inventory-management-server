@@ -77,12 +77,13 @@ router.get("/history/:driverId", async (req, res) => {
     //{ $gte: since },
     const points = await DriverLocationHistory.find({
       driverId,
-      timestamp: 1,
+      timestamp: { $gte: since },
     })
       .sort({ timestamp: 1 }) // oldest → newest
       .lean();
 
     res.json(points);
+   
   } catch (err) {
     console.error("Get history error:", err);
     res.status(500).json({ error: "Server error" });
